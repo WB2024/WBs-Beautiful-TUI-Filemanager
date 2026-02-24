@@ -14,16 +14,9 @@ A beautiful, interactive terminal-based file manager with built-in tools for Lin
 - **Color-coded files** - Different colors for audio 🎵, video 🎬, images 🖼️, archives 📦, code 💻, and more
 - **Smart scrolling** - Smooth scrolling with visual scrollbar
 - **Quick jumps** - Instantly jump to home, root, or bookmarked locations
+- **File information** - Press Enter on files to view name and size
 
-### 📝 Built-in Text Editor
-- **Syntax highlighting** for Python, JSON, Shell scripts, Markdown, and more
-- **Line numbers** and cursor position tracking
-- **Full editing capabilities** - Insert, delete, newlines, navigation
-- **Save functionality** with modification tracking
-- **Auto-detection** of text files (supports 40+ file extensions)
-- **Page Up/Down** support for large files
-
-### 🔖 Bookmark System
+###  Bookmark System
 - **Save favorite directories** with custom names
 - **Quick access** to frequently used locations
 - **Persistent storage** - Bookmarks saved to `~/.filemanager_config.json`
@@ -71,8 +64,8 @@ A beautiful, interactive terminal-based file manager with built-in tools for Lin
 ```bash
 # 1. Clone the repository
 cd /path/to/your/projects
-git clone https://github.com/YOUR_USERNAME/terminal-filemanager.git
-cd terminal-filemanager
+git clone https://github.com/WB2024/WBs-Beautiful-TUI-Filemanager.git
+cd WBs-Beautiful-TUI-Filemanager
 
 # 2. Copy to system path
 sudo cp filemanager /usr/local/bin/filemanager
@@ -86,7 +79,7 @@ filemanager
 
 ```bash
 # 1. Download the filemanager script
-wget https://raw.githubusercontent.com/YOUR_USERNAME/terminal-filemanager/main/filemanager
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/filemanager
 
 # 2. Make it executable
 chmod +x filemanager
@@ -115,7 +108,7 @@ which filemanager
 Launch:           filemanager
 Navigate:         ↑/↓ arrow keys
 Open folder:      Enter
-Edit file:        Enter (on text files)
+View file info:   Enter (on files)
 Go up:            Backspace or select ".."
 Go to home:       h
 Go to root:       r
@@ -128,7 +121,7 @@ Quit:             q
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` | Navigate up/down through files |
-| `Enter` | Open directory or edit file |
+| `Enter` | Open directory or view file info |
 | `Backspace` | Go to parent directory |
 | `h` | Jump to home directory |
 | `r` | Jump to root directory (/) |
@@ -138,23 +131,6 @@ Quit:             q
 | `f` | Find empty/near-empty folders |
 | `?` | Toggle help display |
 | `q` | Quit file manager |
-
-### Text Editor Controls
-
-When editing a file:
-
-```
-^S (Ctrl+S):      Save file
-^Q (Ctrl+Q):      Quit (with warning if modified)
-^X (Ctrl+X):      Quit without saving (double confirm)
-Arrow keys:       Navigate cursor
-Page Up/Down:     Scroll by page
-Home/End:         Jump to line start/end
-Tab:              Insert 4 spaces
-Backspace:        Delete character before cursor
-Delete:           Delete character at cursor
-Enter:            New line
-```
 
 ### Bookmarks
 
@@ -203,11 +179,11 @@ Enter:            New line
 **Extract archives:**
 1. Navigate to directory containing archives
 2. Press `e`
-3. Choose:
-   - "Extract All" to extract all archives
-   - Select individual archive by number
-4. Press `Enter` to confirm
-5. Archives extracted to folders with same name
+3. Use `↑`/`↓` to navigate menu
+4. Press `Space` on "Extract All" to toggle, or select individual archive
+5. Press `Enter` to extract selected archives
+
+**Note:** Requires the `extractfile` command to be installed on your system.
 
 **Supported formats:**
 - `.zip`, `.tar`, `.tar.gz`, `.tgz`
@@ -221,8 +197,7 @@ Enter:            New line
 - 🎵 **Magenta** - Audio files
 - 🎬 **Red** - Video files
 - 🖼️ **Yellow** - Images
-- 💻 **Blue** - Code files
-- 📄 **White** - Regular files
+- � **White** - Regular files (including code, documents, etc.)
 
 ## 🔧 Configuration
 
