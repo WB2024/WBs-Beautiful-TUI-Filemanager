@@ -1,6 +1,6 @@
 # 🗂️ Terminal File Manager
 
-A beautiful, interactive terminal-based file manager with a built-in text editor, audio quality inspector, and powerful tools for Linux/Unix systems. Navigate your filesystem with arrow keys, edit files with syntax highlighting, inspect audio quality, compare audio files, manage permissions, extract archives, and analyze disk usage - all from a gorgeous TUI (Terminal User Interface).
+A beautiful, interactive terminal-based file manager with a built-in text editor, audio & video quality inspectors, and powerful tools for Linux/Unix systems. Navigate your filesystem with arrow keys, edit files with syntax highlighting, inspect audio and video quality, compare media files, manage permissions, extract archives, and analyze disk usage - all from a gorgeous TUI (Terminal User Interface).
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/succinctrecords)
 
@@ -56,6 +56,32 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
   - Recommendation on which file to keep
   - Perfect for finding the best version of duplicate songs
 - **Supported formats**: MP3, FLAC, WAV, M4A, AAC, OGG, Opus, WMA, APE, ALAC, AIFF, DSD
+- **Easy navigation**: Browse to second file without leaving inspector
+
+### 🎬 Video Quality Inspector
+- **Professional video analysis** using ffprobe
+- **Press Enter on video files** to inspect quality
+- **Comprehensive metrics**:
+  - File size and duration
+  - Resolution (8K, 4K, 1080p, 720p, etc.)
+  - Exact dimensions (pixels)
+  - Video codec (AV1, HEVC, H.264, VP9, etc.)
+  - Video bitrate (Mbps)
+  - Frame rate (fps)
+  - Audio codec and bitrate
+  - Quality score (0-100)
+- **Quality indicators**:
+  - Color-coded ratings (Exceptional, Excellent, Very Good, Good, Fair, Poor)
+  - Modern codec detection (AV1, HEVC/H.265)
+  - High resolution highlighting (4K/8K)
+  - High frame rate detection (60fps/120fps)
+- **File comparison mode**:
+  - Compare two video files side-by-side
+  - Quality score comparison
+  - Clear winner indication
+  - Recommendation on which file to keep
+  - Perfect for comparing different encodings or resolutions
+- **Supported formats**: MP4, MKV, AVI, MOV, WMV, FLV, WebM, M4V, MPG, MPEG, 3GP, OGV, TS, M2TS, VOB, DivX, XviD, and more
 - **Easy navigation**: Browse to second file without leaving inspector
 
 ### 🔖 Bookmark System
@@ -318,6 +344,19 @@ When inspecting an audio file:
 | `Enter` | Select file for comparison (in comparison browse mode) |
 | `Backspace` | Go up directory (in comparison browse mode) |
 
+### Video Inspector Controls
+
+When inspecting a video file:
+
+| Key | Action |
+|-----|--------|
+| `c` | Start/Clear comparison mode |
+| `q` | Exit inspector (or return to single view from comparison) |
+| `ESC` | Exit inspector (or return to single view from comparison) |
+| `↑` / `↓` | Navigate files (in comparison browse mode) |
+| `Enter` | Select file for comparison (in comparison browse mode) |
+| `Backspace` | Go up directory (in comparison browse mode) |
+
 ### Bookmarks
 
 **Add a bookmark:**
@@ -437,6 +476,89 @@ When inspecting an audio file:
 - Green-colored metrics indicate high-quality values
 - The quality score combines sample rate, bitrate, bit depth, and codec
 - Perfect for deciding which duplicate file to keep!
+
+### Video Quality Inspector
+
+**Opening the inspector:**
+- Navigate to any video file (MP4, MKV, AVI, MOV, WebM, etc.)
+- Press **Enter** to launch the Video Quality Inspector
+- Professional-grade video analysis using ffprobe
+
+**Quality metrics displayed:**
+- **Quality Score** (0-100) with color-coded rating:
+  - 90-100: Exceptional (Green)
+  - 75-89: Excellent (Green)
+  - 60-74: Very Good (Blue)
+  - 45-59: Good (Yellow)
+  - 30-44: Fair (Yellow)
+  - 0-29: Poor (Red)
+- **File Size**: Total file size in MB/GB
+- **Duration**: Video length in HH:MM:SS or MM:SS format
+- **Resolution**: Common name (8K UHD, 4K UHD, Full HD, etc.)
+- **Dimensions**: Exact pixel dimensions (e.g., 1920x1080)
+- **Video Codec**: Compression format with quality indicator
+  - AV1: Most modern and efficient (Green)
+  - HEVC/H.265: Excellent quality (Green)
+  - VP9: Very good quality
+  - H.264/AVC: Good standard
+- **Video Bitrate**: Data rate in Mbps (higher is better)
+  - 50+ Mbps: Exceptional quality
+  - 20+ Mbps: Excellent for 4K
+  - 10+ Mbps: Very good for 1080p
+  - 5+ Mbps: Good for 1080p
+- **Frame Rate**: Frames per second (60fps/120fps = smoother)
+- **Audio Codec**: Audio compression format
+- **Audio Bitrate**: Audio data rate if audio track present
+
+**Resolution categories:**
+- **8K UHD**: 7680x4320 or higher
+- **4K UHD (2160p)**: 3840x2160 or higher
+- **QHD (1440p)**: 2560x1440 or higher
+- **Full HD (1080p)**: 1920x1080 or higher
+- **HD (720p)**: 1280x720 or higher
+- **SD (480p)**: 854x480 or higher
+
+**Comparing two video files:**
+1. Open the first video file (press Enter)
+2. In the inspector, press **c** to start comparison
+3. Navigate to the second video file using arrow keys
+4. The message bar shows which file you're comparing FROM
+5. Press **Enter** to select the comparison file
+6. View side-by-side comparison with:
+   - All metrics displayed for both files
+   - Quality scores compared
+   - Clear winner indication with recommendation
+   - Score difference highlighted
+
+**Comparison use cases:**
+- **Format comparison**: Compare different encodings (H.264 vs H.265)
+- **Resolution comparison**: Compare 1080p vs 4K versions
+- **Bitrate testing**: Find optimal bitrate for file size
+- **Download verification**: Ensure you got the best quality version
+- **Library cleanup**: Identify and remove lower-quality duplicates
+- **Transcoding validation**: Verify re-encoded videos maintain quality
+
+**Quality scoring algorithm:**
+The 0-100 score is calculated from:
+- **Resolution** (35 points): Higher resolutions score better
+- **Video Bitrate** (30 points): Higher bitrates score better
+- **Codec** (20 points): Modern codecs (AV1, HEVC) score higher
+- **Frame Rate** (15 points): 60fps+ scores higher than 30fps
+
+**Controls:**
+- **q** or **ESC**: Exit inspector (or return to single view from comparison)
+- **c**: Start comparison mode / Clear comparison
+- Navigate normally in comparison browse mode
+
+**Supported formats:**
+MP4, MKV, AVI, MOV, WMV, FLV, WebM, M4V, MPG, MPEG, 3GP, OGV, TS, M2TS, VOB, DivX, XviD, F4V, RM, RMVB
+
+**Tips:**
+- Green-colored metrics indicate high-quality values
+- Modern codecs (AV1, HEVC/H.265) provide better quality at lower bitrates
+- 4K at 20 Mbps often looks better than 1080p at 10 Mbps
+- Frame rate matters: 60fps is noticeably smoother than 30fps for action
+- Perfect for comparing different encodes of the same content!
 
 ### Empty Folder Analysis
 

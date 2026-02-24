@@ -491,6 +491,18 @@ class FileManager:
         ext = path.suffix.lower()
         return ext in audio_extensions
     
+    def is_video_file(self, path):
+        """Check if a file is a video file"""
+        video_extensions = {
+            '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm',
+            '.m4v', '.mpg', '.mpeg', '.3gp', '.ogv', '.ts', '.m2ts',
+            '.vob', '.divx', '.xvid', '.f4v', '.rm', '.rmvb'
+        }
+        
+        path = Path(path)
+        ext = path.suffix.lower()
+        return ext in video_extensions
+    
     def handle_enter(self):
         """Handle Enter key - open directory or file"""
         if not self.entries:
@@ -505,6 +517,12 @@ class FileManager:
             if self.is_audio_file(entry['path']):
                 # Open audio inspector
                 inspector = AudioInspector(self.stdscr, entry['path'], self)
+                inspector.run()
+                # Reload directory after inspection
+                self.load_directory()
+            elif self.is_video_file(entry['path']):
+                # Open video inspector
+                inspector = VideoInspector(self.stdscr, entry['path'], self)
                 inspector.run()
                 # Reload directory after inspection
                 self.load_directory()
@@ -1611,6 +1629,562 @@ class AudioInspector:
     def run(self):
         """Main inspector loop"""
         self.audio_info = self.analyze_file(self.filepath)
+        curses.curs_set(0)
+        
+        while self.running:
+            self.draw()
+            key = self.stdscr.getch()
+            
+            if key in [ord('q'), 27]:  # q or ESC
+                if self.show_comparison:
+                    # If in comparison mode, go back to single view
+                    self.show_comparison = False
+                    self.compare_file = None
+                    self.compare_info = None
+                    self.message = ""
+                else:
+                    # Exit inspector
+                    self.running = False
+            
+            elif key == ord('c'):
+                if self.show_comparison:
+                    # Clear comparison
+                    self.show_comparison = False
+                    self.compare_file = None
+                    self.compare_info = None
+                    self.message = "Comparison cleared"
+                    self.message_color = curses.COLOR_GREEN
+                else:
+                    # Start comparison
+                    self.browse_for_comparison()
+
+
+class VideoInspector:
+    """Video file quality inspector with comparison capabilities"""
+    
+    def __init__(self, stdscr, filepath, file_manager=None):
+        self.stdscr = stdscr
+        self.filepath = Path(filepath)
+        self.file_manager = file_manager
+        self.running = True
+        self.message = ""
+        self.message_color = curses.COLOR_GREEN
+        self.video_info = None
+        self.compare_file = None
+        self.compare_info = None
+        self.show_comparison = False
+        
+        # Initialize colors
+        curses.start_color()
+        curses.use_default_colors()
+        
+        # Analyze current file
+        self.analyze_file(self.filepath)
+    
+    def check_ffprobe(self):
+        """Check if ffprobe is available"""
+        return shutil.which('ffprobe') is not None
+    
+    def analyze_file(self, filepath):
+        """Analyze video file using ffprobe"""
+        if not self.check_ffprobe():
+            return {
+                'error': 'ffprobe not installed',
+                'message': 'Install ffmpeg: sudo apt install ffmpeg'
+            }
+        
+        try:
+            # Run ffprobe to get video information
+            cmd = [
+                'ffprobe',
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams',
+                str(filepath)
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            
+            if result.returncode != 0:
+                return {'error': 'Failed to analyze file'}
+            
+            import json
+            data = json.loads(result.stdout)
+            
+            # Extract video and audio streams
+            video_stream = None
+            audio_stream = None
+            for stream in data.get('streams', []):
+                if stream.get('codec_type') == 'video' and not video_stream:
+                    video_stream = stream
+                elif stream.get('codec_type') == 'audio' and not audio_stream:
+                    audio_stream = stream
+            
+            if not video_stream:
+                return {'error': 'No video stream found'}
+            
+            # Extract format info
+            format_info = data.get('format', {})
+            
+            # Build comprehensive video info
+            info = {
+                'filepath': filepath,
+                'filename': Path(filepath).name,
+                'file_size': int(format_info.get('size', 0)),
+                'duration': float(format_info.get('duration', 0)),
+                'format_name': format_info.get('format_name', 'Unknown'),
+                
+                # Video properties
+                'video_codec': video_stream.get('codec_name', 'Unknown'),
+                'video_codec_long': video_stream.get('codec_long_name', 'Unknown'),
+                'width': int(video_stream.get('width', 0)),
+                'height': int(video_stream.get('height', 0)),
+                'video_bitrate': int(video_stream.get('bit_rate', 0)),
+                'fps': self.parse_fps(video_stream.get('r_frame_rate', '0/1')),
+                'pix_fmt': video_stream.get('pix_fmt', 'Unknown'),
+                'color_space': video_stream.get('color_space', 'Unknown'),
+                'bit_depth': video_stream.get('bits_per_raw_sample', 'N/A'),
+                
+                # Audio properties (if available)
+                'has_audio': audio_stream is not None,
+                'audio_codec': audio_stream.get('codec_name', 'N/A') if audio_stream else 'N/A',
+                'audio_bitrate': int(audio_stream.get('bit_rate', 0)) if audio_stream else 0,
+                'audio_sample_rate': int(audio_stream.get('sample_rate', 0)) if audio_stream else 0,
+                'audio_channels': int(audio_stream.get('channels', 0)) if audio_stream else 0,
+                
+                # Overall bitrate
+                'total_bitrate': int(format_info.get('bit_rate', 0)),
+                
+                'tags': format_info.get('tags', {}),
+            }
+            
+            # Calculate resolution category
+            info['resolution'] = self.get_resolution_name(info['width'], info['height'])
+            
+            return info
+            
+        except subprocess.TimeoutExpired:
+            return {'error': 'Analysis timeout'}
+        except Exception as e:
+            return {'error': f'Analysis failed: {str(e)}'}
+    
+    def parse_fps(self, fps_string):
+        """Parse frame rate from fraction string like '30000/1001'"""
+        try:
+            if '/' in fps_string:
+                num, den = fps_string.split('/')
+                return float(num) / float(den)
+            return float(fps_string)
+        except:
+            return 0.0
+    
+    def get_resolution_name(self, width, height):
+        """Get common resolution names"""
+        if width >= 7680 and height >= 4320:
+            return "8K UHD"
+        elif width >= 3840 and height >= 2160:
+            return "4K UHD (2160p)"
+        elif width >= 2560 and height >= 1440:
+            return "QHD (1440p)"
+        elif width >= 1920 and height >= 1080:
+            return "Full HD (1080p)"
+        elif width >= 1280 and height >= 720:
+            return "HD (720p)"
+        elif width >= 854 and height >= 480:
+            return "SD (480p)"
+        else:
+            return f"{width}x{height}"
+    
+    def get_quality_score(self, info):
+        """Calculate quality score (0-100) based on video metrics"""
+        if 'error' in info:
+            return 0
+        
+        score = 0
+        
+        # Resolution scoring (max 35 points)
+        pixels = info.get('width', 0) * info.get('height', 0)
+        if pixels >= 33177600:  # 8K
+            score += 35
+        elif pixels >= 8294400:  # 4K
+            score += 33
+        elif pixels >= 3686400:  # 1440p
+            score += 28
+        elif pixels >= 2073600:  # 1080p
+            score += 25
+        elif pixels >= 921600:  # 720p
+            score += 18
+        else:
+            score += 10
+        
+        # Video bitrate scoring (max 30 points)
+        vbitrate = info.get('video_bitrate', info.get('total_bitrate', 0))
+        if vbitrate >= 50000000:  # 50 Mbps+
+            score += 30
+        elif vbitrate >= 20000000:  # 20 Mbps
+            score += 28
+        elif vbitrate >= 10000000:  # 10 Mbps
+            score += 25
+        elif vbitrate >= 5000000:  # 5 Mbps
+            score += 20
+        elif vbitrate >= 2500000:  # 2.5 Mbps
+            score += 15
+        else:
+            score += 8
+        
+        # Codec scoring (max 20 points)
+        codec = info.get('video_codec', '').lower()
+        if codec in ['av1']:
+            score += 20  # Most modern and efficient
+        elif codec in ['hevc', 'h265']:
+            score += 18  # Excellent
+        elif codec in ['vp9']:
+            score += 17  # Very good
+        elif codec in ['h264', 'avc']:
+            score += 14  # Good standard
+        elif codec in ['vp8']:
+            score += 12
+        else:
+            score += 8
+        
+        # Frame rate scoring (max 15 points)
+        fps = info.get('fps', 0)
+        if fps >= 120:
+            score += 15
+        elif fps >= 60:
+            score += 14
+        elif fps >= 50:
+            score += 13
+        elif fps >= 30:
+            score += 11
+        elif fps >= 24:
+            score += 9
+        else:
+            score += 5
+        
+        return min(100, score)
+    
+    def get_quality_label(self, score):
+        """Get quality label and color from score"""
+        if score >= 90:
+            return "Exceptional", curses.color_pair(2)  # Green
+        elif score >= 75:
+            return "Excellent", curses.color_pair(2)
+        elif score >= 60:
+            return "Very Good", curses.color_pair(11)  # Blue
+        elif score >= 45:
+            return "Good", curses.color_pair(10)  # Yellow
+        elif score >= 30:
+            return "Fair", curses.color_pair(10)
+        else:
+            return "Poor", curses.color_pair(9)  # Red
+    
+    def format_size(self, size_bytes):
+        """Format bytes to human readable"""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.2f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.2f} TB"
+    
+    def format_duration(self, seconds):
+        """Format duration to MM:SS or HH:MM:SS"""
+        if seconds < 0:
+            return "00:00"
+        
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes:02d}:{secs:02d}"
+    
+    def format_bitrate(self, bitrate):
+        """Format bitrate to Mbps/kbps"""
+        if bitrate >= 1000000:
+            return f"{bitrate / 1000000:.1f} Mbps"
+        elif bitrate >= 1000:
+            return f"{bitrate / 1000:.0f} kbps"
+        return f"{bitrate} bps"
+    
+    def draw_header(self):
+        """Draw header"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Title
+        if self.show_comparison:
+            title = " 🎬 VIDEO QUALITY COMPARISON 🎬 "
+        else:
+            title = " 🎬 VIDEO QUALITY INSPECTOR 🎬 "
+        
+        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+        self.stdscr.addstr(0, 0, title.center(width)[:width])
+        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        
+        # Separator
+        self.stdscr.addstr(1, 0, "─" * width)
+    
+    def draw_footer(self):
+        """Draw footer with help"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Separator
+        self.stdscr.addstr(height - 3, 0, "─" * width)
+        
+        # Help text
+        if self.show_comparison:
+            help_text = "c: Clear Comparison | q: Back to Inspector | ESC: Exit"
+        else:
+            help_text = "c: Compare with Another File | q/ESC: Exit"
+        
+        self.stdscr.addstr(height - 2, 1, help_text[:width-2], curses.color_pair(11))
+        
+        # Message
+        if self.message:
+            color = curses.color_pair(8) if self.message_color == curses.COLOR_GREEN else \
+                    curses.color_pair(9) if self.message_color == curses.COLOR_RED else \
+                    curses.color_pair(10)
+            self.stdscr.addstr(height - 1, 1, self.message[:width-2], color | curses.A_BOLD)
+    
+    def draw_video_info(self, info, start_y, start_x, width, label=None):
+        """Draw video information panel"""
+        if 'error' in info:
+            self.stdscr.addstr(start_y, start_x, f"❌ {info['error']}", curses.color_pair(9))
+            if 'message' in info:
+                self.stdscr.addstr(start_y + 1, start_x, info['message'], curses.color_pair(10))
+            return start_y + 3
+        
+        current_y = start_y
+        
+        # File label if provided
+        if label:
+            self.stdscr.addstr(current_y, start_x, label, curses.color_pair(7) | curses.A_BOLD)
+            current_y += 1
+        
+        # Filename
+        filename = info['filename']
+        if len(filename) > width - 6:
+            filename = filename[:width-9] + "..."
+        self.stdscr.addstr(current_y, start_x, f"🎬 {filename}", curses.color_pair(11) | curses.A_BOLD)
+        current_y += 2
+        
+        # Quality Score
+        score = self.get_quality_score(info)
+        quality_label, quality_color = self.get_quality_label(score)
+        self.stdscr.addstr(current_y, start_x, "Quality Score:", curses.A_BOLD)
+        self.stdscr.addstr(current_y, start_x + 16, f"{score}/100 ({quality_label})", quality_color | curses.A_BOLD)
+        current_y += 2
+        
+        # File Size
+        self.stdscr.addstr(current_y, start_x, "File Size:")
+        self.stdscr.addstr(current_y, start_x + 16, self.format_size(info['file_size']), curses.color_pair(26))
+        current_y += 1
+        
+        # Duration
+        self.stdscr.addstr(current_y, start_x, "Duration:")
+        self.stdscr.addstr(current_y, start_x + 16, self.format_duration(info['duration']), curses.color_pair(26))
+        current_y += 1
+        
+        # Resolution
+        self.stdscr.addstr(current_y, start_x, "Resolution:")
+        res_display = f"{info['resolution']}"
+        res_color = curses.color_pair(2) if info.get('height', 0) >= 1080 else curses.color_pair(26)
+        self.stdscr.addstr(current_y, start_x + 16, res_display, res_color)
+        current_y += 1
+        
+        # Dimensions
+        self.stdscr.addstr(current_y, start_x, "Dimensions:")
+        dim_display = f"{info['width']}x{info['height']}"
+        self.stdscr.addstr(current_y, start_x + 16, dim_display, curses.color_pair(26))
+        current_y += 1
+        
+        # Video Codec
+        self.stdscr.addstr(current_y, start_x, "Video Codec:")
+        codec_display = info['video_codec'].upper()
+        codec_color = curses.color_pair(2) if info['video_codec'].lower() in ['av1', 'hevc', 'h265'] else curses.color_pair(26)
+        self.stdscr.addstr(current_y, start_x + 16, codec_display, codec_color)
+        current_y += 1
+        
+        # Video Bitrate
+        self.stdscr.addstr(current_y, start_x, "Video Bitrate:")
+        vbitrate = info.get('video_bitrate', info.get('total_bitrate', 0))
+        br_display = self.format_bitrate(vbitrate)
+        br_color = curses.color_pair(2) if vbitrate >= 10000000 else curses.color_pair(26)
+        self.stdscr.addstr(current_y, start_x + 16, br_display, br_color)
+        current_y += 1
+        
+        # Frame Rate
+        self.stdscr.addstr(current_y, start_x, "Frame Rate:")
+        fps_display = f"{info['fps']:.2f} fps"
+        fps_color = curses.color_pair(2) if info['fps'] >= 60 else curses.color_pair(26)
+        self.stdscr.addstr(current_y, start_x + 16, fps_display, fps_color)
+        current_y += 1
+        
+        # Audio info
+        if info['has_audio']:
+            self.stdscr.addstr(current_y, start_x, "Audio Codec:")
+            self.stdscr.addstr(current_y, start_x + 16, info['audio_codec'].upper(), curses.color_pair(26))
+            current_y += 1
+            
+            if info['audio_bitrate'] > 0:
+                self.stdscr.addstr(current_y, start_x, "Audio Bitrate:")
+                self.stdscr.addstr(current_y, start_x + 16, self.format_bitrate(info['audio_bitrate']), curses.color_pair(26))
+                current_y += 1
+        else:
+            self.stdscr.addstr(current_y, start_x, "Audio:")
+            self.stdscr.addstr(current_y, start_x + 16, "No audio track", curses.color_pair(9))
+            current_y += 1
+        
+        return current_y
+    
+    def draw_comparison(self):
+        """Draw comparison view"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Calculate panel width
+        panel_width = (width - 4) // 2
+        
+        # Draw left panel (original file)
+        left_x = 2
+        current_y = self.draw_video_info(self.video_info, 3, left_x, panel_width, "FILE 1 (Current)")
+        
+        # Draw separator
+        sep_x = panel_width + 2
+        for y in range(2, height - 3):
+            self.stdscr.addstr(y, sep_x, "│", curses.color_pair(11))
+        
+        # Draw right panel (comparison file)
+        right_x = sep_x + 2
+        current_y = self.draw_video_info(self.compare_info, 3, right_x, panel_width, "FILE 2 (Compare)")
+        
+        # Draw winner indicator
+        if 'error' not in self.video_info and 'error' not in self.compare_info:
+            score1 = self.get_quality_score(self.video_info)
+            score2 = self.get_quality_score(self.compare_info)
+            
+            winner_y = max(current_y, height - 10)
+            if winner_y < height - 4:
+                self.stdscr.addstr(winner_y, 0, "─" * width)
+                winner_y += 1
+                
+                if score1 > score2:
+                    msg = f"🏆 FILE 1 IS HIGHER QUALITY (by {score1 - score2} points)"
+                    self.stdscr.addstr(winner_y, (width - len(msg)) // 2, msg, curses.color_pair(2) | curses.A_BOLD)
+                    winner_y += 1
+                    self.stdscr.addstr(winner_y, (width - 30) // 2, "Recommendation: Keep File 1", curses.color_pair(11))
+                elif score2 > score1:
+                    msg = f"🏆 FILE 2 IS HIGHER QUALITY (by {score2 - score1} points)"
+                    self.stdscr.addstr(winner_y, (width - len(msg)) // 2, msg, curses.color_pair(2) | curses.A_BOLD)
+                    winner_y += 1
+                    self.stdscr.addstr(winner_y, (width - 30) // 2, "Recommendation: Keep File 2", curses.color_pair(11))
+                else:
+                    msg = "⚖️  BOTH FILES HAVE EQUAL QUALITY"
+                    self.stdscr.addstr(winner_y, (width - len(msg)) // 2, msg, curses.color_pair(10) | curses.A_BOLD)
+    
+    def draw_single_view(self):
+        """Draw single file view"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Center the info panel
+        panel_width = min(60, width - 4)
+        start_x = (width - panel_width) // 2
+        
+        self.draw_video_info(self.video_info, 3, start_x, panel_width)
+    
+    def draw(self):
+        """Draw the inspector interface"""
+        self.stdscr.clear()
+        self.draw_header()
+        
+        if self.show_comparison and self.compare_info:
+            self.draw_comparison()
+        else:
+            self.draw_single_view()
+        
+        self.draw_footer()
+        self.stdscr.refresh()
+    
+    def browse_for_comparison(self):
+        """Browse for a file to compare"""
+        if not self.file_manager:
+            self.message = "File browser not available"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        # Show message
+        self.message = "Navigate to comparison file and press Enter, or ESC to cancel"
+        self.message_color = curses.COLOR_YELLOW
+        self.draw()
+        self.stdscr.getch()
+        
+        # Temporarily return to file manager for selection
+        curses.curs_set(0)
+        
+        # Create message showing the first file being compared
+        first_file_name = self.filepath.name
+        first_file_path = str(self.filepath.parent)
+        
+        # Truncate path if too long
+        height, width = self.stdscr.getmaxyx()
+        max_path_len = width - 60  # Leave room for the message text
+        if len(first_file_path) > max_path_len:
+            first_file_path = "..." + first_file_path[-(max_path_len-3):]
+        
+        comparison_msg = f"Comparing FROM: {first_file_name} ({first_file_path})"
+        
+        while True:
+            # Update message each iteration to show first file info
+            self.file_manager.message = f"{comparison_msg} | Select 2nd video file (Enter) or q to cancel"
+            self.file_manager.message_color = curses.COLOR_YELLOW
+            
+            self.file_manager.draw()
+            key = self.stdscr.getch()
+            
+            if key == ord('q') or key == 27:  # q or ESC
+                self.message = "Comparison cancelled"
+                self.message_color = curses.COLOR_YELLOW
+                self.file_manager.message = ""  # Clear the comparison message
+                return
+            
+            elif key == curses.KEY_UP:
+                self.file_manager.selected_index = max(0, self.file_manager.selected_index - 1)
+            
+            elif key == curses.KEY_DOWN:
+                self.file_manager.selected_index = min(len(self.file_manager.entries) - 1, 
+                                                       self.file_manager.selected_index + 1)
+            
+            elif key in [ord('\n'), curses.KEY_ENTER, 10, 13]:
+                # Check if selected file is video
+                entry = self.file_manager.entries[self.file_manager.selected_index]
+                
+                if entry['is_dir']:
+                    # Navigate into directory
+                    self.file_manager.change_directory(entry['path'])
+                elif self.file_manager.is_video_file(entry['path']):
+                    # Selected a video file
+                    self.compare_file = entry['path']
+                    self.compare_info = self.analyze_file(self.compare_file)
+                    self.show_comparison = True
+                    self.message = "Comparison loaded!"
+                    self.message_color = curses.COLOR_GREEN
+                    self.file_manager.message = ""  # Clear the comparison message
+                    return
+                else:
+                    # Keep showing the comparison_msg but add error
+                    self.file_manager.message = f"{comparison_msg} | ERROR: Please select a video file"
+                    self.file_manager.message_color = curses.COLOR_RED
+            
+            elif key in [curses.KEY_BACKSPACE, 127, 8]:
+                # Go up one directory
+                if self.file_manager.current_dir != self.file_manager.current_dir.parent:
+                    self.file_manager.change_directory(self.file_manager.current_dir.parent)
+    
+    def run(self):
+        """Main inspector loop"""
+        self.video_info = self.analyze_file(self.filepath)
         curses.curs_set(0)
         
         while self.running:
