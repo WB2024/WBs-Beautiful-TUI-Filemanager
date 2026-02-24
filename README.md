@@ -132,7 +132,46 @@ which filemanager extractfile fixperms
 # /usr/local/bin/extractfile
 # /usr/local/bin/fixperms
 ```
+## 🔄 Updating
 
+To update to the latest version:
+
+### If You Cloned the Repository
+
+```bash
+# 1. Navigate to your cloned repository
+cd /path/to/your/WBs-Beautiful-TUI-Filemanager
+
+# 2. Pull the latest changes
+git pull origin main
+
+# 3. Copy updated files to system path (replace old versions)
+sudo cp filemanager extractfile fixperms /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms
+
+# 4. Verify the update
+filemanager
+```
+
+### If You Downloaded Files Manually
+
+```bash
+# 1. Download the latest versions
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/filemanager -O filemanager
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/extractfile -O extractfile
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/fixperms -O fixperms
+
+# 2. Make them executable
+chmod +x filemanager extractfile fixperms
+
+# 3. Replace old versions in system path
+sudo mv filemanager extractfile fixperms /usr/local/bin/
+
+# 4. Verify the update
+filemanager
+```
+
+**Note:** Your bookmarks and configuration file (`~/.filemanager_config.json`) will be preserved during updates.
 ## � Included Utilities
 
 This package includes three powerful command-line tools:
