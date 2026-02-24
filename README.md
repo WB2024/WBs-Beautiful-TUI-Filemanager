@@ -16,6 +16,33 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 - **Quick jumps** - Instantly jump to home, root, or bookmarked locations
 - **File information** - Press Enter on files to view name and size
 
+### 📁 File Management Operations
+- **File Selection System**
+  - `Space` - Toggle mark on current file (moves to next)
+  - `a` - Mark all files in current folder
+  - `u` - Unmark all selected files
+  - Visual markers `[*]` show selected files
+  - Selection count displayed in status bar
+- **Copy, Cut & Paste**
+  - `c` - Copy marked files (or current file if none marked)
+  - `x` - Cut marked files (or current file if none marked)
+  - `v` - Paste files from clipboard to current directory
+  - Clipboard status shown in footer
+  - Automatic rename on conflict (appends _1, _2, etc.)
+- **Delete**
+  - `d` - Delete marked files or current file
+  - Confirmation prompt before deletion
+  - Works on files and folders
+- **Create & Rename**
+  - `n` - Create new file or folder
+  - `R` - Rename current file or folder
+- **Bulk Operations Menu** (`o`)
+  - Copy All Files - Copy all files in folder
+  - Move All Files - Move all files in folder
+  - Delete All Files - Delete all files (with confirmation)
+  - Copy/Move/Delete Marked Files
+  - Mark/Unmark All Files
+
 ### 📝 Built-in Text Editor
 - **Syntax highlighting** for Python, JSON, and more
 - **Line numbers** with current line highlighting
@@ -299,10 +326,20 @@ Quit:             q
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` | Navigate up/down through files |
-| `Enter` | Open directory / Edit text file / Inspect audio file |
+| `Enter` | Open directory / Edit text file / Inspect audio/video file |
 | `Backspace` | Go to parent directory |
 | `h` | Jump to home directory |
 | `r` | Jump to root directory (/) |
+| `Space` | Toggle mark on current file |
+| `a` | Mark all files in current folder |
+| `u` | Unmark all files |
+| `c` | Copy marked files (or current file) to clipboard |
+| `x` | Cut marked files (or current file) to clipboard |
+| `v` | Paste from clipboard to current directory |
+| `d` | Delete marked files (or current file) |
+| `n` | Create new file or folder |
+| `R` | Rename current file or folder |
+| `o` | Open file operations menu |
 | `b` | Open bookmarks menu |
 | `p` | Fix permissions (777 recursive) |
 | `e` | Extract archives |

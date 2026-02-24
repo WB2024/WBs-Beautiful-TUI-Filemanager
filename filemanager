@@ -73,6 +73,11 @@ class FileManager:
         self.message = ""
         self.message_color = curses.COLOR_GREEN
         
+        # File selection and clipboard
+        self.selected_files = set()  # Set of selected file paths
+        self.clipboard = []  # Files in clipboard for copy/move
+        self.clipboard_operation = None  # 'copy' or 'cut'
+        
         # Initialize colors
         curses.start_color()
         curses.use_default_colors()
@@ -87,6 +92,7 @@ class FileManager:
         curses.init_pair(9, curses.COLOR_RED, -1)       # Error messages
         curses.init_pair(10, curses.COLOR_YELLOW, -1)   # Warning messages
         curses.init_pair(11, curses.COLOR_BLUE, -1)     # Info
+        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)  # Marked/Selected files
         
         # Hide cursor
         curses.curs_set(0)
@@ -256,6 +262,7 @@ class FileManager:
     def load_directory(self):
         """Load current directory contents"""
         self.entries = []
+        self.selected_files.clear()  # Clear selections when changing directories
         
         # Add parent directory entry if not at root
         if self.current_dir != self.current_dir.parent:
@@ -331,23 +338,36 @@ class FileManager:
         height, width = self.stdscr.getmaxyx()
         
         # Separator
-        self.stdscr.addstr(height - 4, 0, "─" * width)
+        self.stdscr.addstr(height - 5, 0, "─" * width)
+        
+        # Selection status
+        if self.selected_files:
+            sel_count = len(self.selected_files)
+            sel_info = f" {sel_count} file(s) marked "
+            self.stdscr.addstr(height - 5, width - len(sel_info) - 2, sel_info, curses.color_pair(10) | curses.A_BOLD)
+        
+        # Clipboard status
+        if self.clipboard:
+            clip_count = len(self.clipboard)
+            clip_op = "copy" if self.clipboard_operation == 'copy' else "cut"
+            clip_info = f" Clipboard: {clip_count} ({clip_op}) "
+            self.stdscr.addstr(height - 5, 2, clip_info, curses.color_pair(11))
         
         # Help text
         if self.show_help:
             help_lines = [
-                "↑/↓: Navigate  Enter: Open  Backspace: Go Up  h: Home  r: Root",
-                "p: Permissions  e: Extract  f: Find Empty  b: Bookmarks  q: Quit",
-                "Press ? to hide help"
+                "↑/↓: Navigate  Enter: Open  Backspace: Up  h: Home  r: Root  ?: Help",
+                "Space: Mark  a: Mark All  u: Unmark All  o: Operations Menu",
+                "c: Copy  x: Cut  v: Paste  d: Delete  n: New  R: Rename  q: Quit"
             ]
         else:
             help_lines = [
-                "Press ? for help"
+                "?: Help  Space: Mark  o: Ops  c: Copy  x: Cut  v: Paste  d: Del  n: New"
             ]
         
         for i, line in enumerate(help_lines):
-            if height - 3 + i < height:
-                self.stdscr.addstr(height - 3 + i, 1, line[:width-2], curses.color_pair(11))
+            if height - 4 + i < height:
+                self.stdscr.addstr(height - 4 + i, 1, line[:width-2], curses.color_pair(11))
         
         # Message
         if self.message:
@@ -361,7 +381,7 @@ class FileManager:
         
         # Calculate visible area
         visible_start = 3
-        visible_end = height - 4
+        visible_end = height - 5
         visible_count = visible_end - visible_start
         
         # Adjust scroll offset
@@ -380,12 +400,16 @@ class FileManager:
             entry = self.entries[entry_index]
             y_pos = visible_start + i
             
-            # Determine if selected
-            is_selected = entry_index == self.selected_index
+            # Determine if cursor is on this item and if file is marked
+            is_cursor = entry_index == self.selected_index
+            is_marked = entry['path'] in self.selected_files
             
             # Build display string
             icon = self.get_file_icon(entry)
             name = entry['name']
+            
+            # Selection marker
+            marker = "[*]" if is_marked else "[ ]"
             
             # Size string
             if entry['is_dir']:
@@ -397,7 +421,7 @@ class FileManager:
             perms = entry['perms']
             
             # Calculate available width for name
-            prefix = f"{icon} "
+            prefix = f"{marker} {icon} "
             suffix = f" {perms} {size_str}"
             available_width = width - len(prefix) - len(suffix) - 4
             
@@ -406,11 +430,20 @@ class FileManager:
             
             display = f"{prefix}{name:<{available_width}}{suffix}"
             
-            # Draw with appropriate color
-            if is_selected:
+            # Draw with appropriate color - marked files get special treatment
+            if is_cursor and is_marked:
+                # Cursor on marked file
+                self.stdscr.attron(curses.color_pair(12) | curses.A_BOLD)
+                self.stdscr.addstr(y_pos, 1, display[:width-2])
+                self.stdscr.attroff(curses.color_pair(12) | curses.A_BOLD)
+            elif is_cursor:
+                # Cursor on unmarked file
                 self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
                 self.stdscr.addstr(y_pos, 1, display[:width-2])
                 self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            elif is_marked:
+                # Marked file without cursor
+                self.stdscr.addstr(y_pos, 1, display[:width-2], curses.color_pair(10) | curses.A_BOLD)
             else:
                 color = self.get_file_color(entry)
                 self.stdscr.addstr(y_pos, 1, display[:width-2], color)
@@ -1109,6 +1142,482 @@ class FileManager:
             elif key == ord('q'):
                 break
     
+    def toggle_mark(self):
+        """Toggle mark on current file"""
+        if not self.entries or self.selected_index >= len(self.entries):
+            return
+        
+        entry = self.entries[self.selected_index]
+        
+        # Don't allow marking ".." directory
+        if entry['name'] == '..':
+            self.message = "Cannot mark parent directory"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        path = entry['path']
+        if path in self.selected_files:
+            self.selected_files.remove(path)
+            self.message = f"Unmarked: {entry['name']}"
+        else:
+            self.selected_files.add(path)
+            self.message = f"Marked: {entry['name']}"
+        self.message_color = curses.COLOR_GREEN
+        
+        # Move to next item
+        if self.selected_index < len(self.entries) - 1:
+            self.selected_index += 1
+    
+    def mark_all_files(self):
+        """Mark all files (not directories) in current directory"""
+        count = 0
+        for entry in self.entries:
+            if not entry['is_dir'] and entry['name'] != '..':
+                self.selected_files.add(entry['path'])
+                count += 1
+        
+        self.message = f"Marked {count} files"
+        self.message_color = curses.COLOR_GREEN
+    
+    def unmark_all_files(self):
+        """Unmark all files"""
+        count = len(self.selected_files)
+        self.selected_files.clear()
+        self.message = f"Unmarked {count} files"
+        self.message_color = curses.COLOR_GREEN
+    
+    def copy_to_clipboard(self):
+        """Copy marked files or current file to clipboard"""
+        if self.selected_files:
+            self.clipboard = list(self.selected_files)
+            self.clipboard_operation = 'copy'
+            self.message = f"Copied {len(self.clipboard)} file(s) to clipboard"
+        else:
+            # Copy current file
+            if not self.entries or self.selected_index >= len(self.entries):
+                return
+            entry = self.entries[self.selected_index]
+            if entry['name'] == '..':
+                self.message = "Cannot copy parent directory"
+                self.message_color = curses.COLOR_YELLOW
+                return
+            self.clipboard = [entry['path']]
+            self.clipboard_operation = 'copy'
+            self.message = f"Copied: {entry['name']}"
+        self.message_color = curses.COLOR_GREEN
+    
+    def cut_to_clipboard(self):
+        """Cut marked files or current file to clipboard"""
+        if self.selected_files:
+            self.clipboard = list(self.selected_files)
+            self.clipboard_operation = 'cut'
+            self.message = f"Cut {len(self.clipboard)} file(s) to clipboard"
+        else:
+            # Cut current file
+            if not self.entries or self.selected_index >= len(self.entries):
+                return
+            entry = self.entries[self.selected_index]
+            if entry['name'] == '..':
+                self.message = "Cannot cut parent directory"
+                self.message_color = curses.COLOR_YELLOW
+                return
+            self.clipboard = [entry['path']]
+            self.clipboard_operation = 'cut'
+            self.message = f"Cut: {entry['name']}"
+        self.message_color = curses.COLOR_GREEN
+    
+    def paste_from_clipboard(self):
+        """Paste files from clipboard to current directory"""
+        if not self.clipboard:
+            self.message = "Clipboard is empty"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        success = 0
+        failed = 0
+        dest_dir = self.current_dir
+        
+        for src_path in self.clipboard:
+            src_path = Path(src_path)
+            if not src_path.exists():
+                failed += 1
+                continue
+            
+            dest_path = dest_dir / src_path.name
+            
+            # Handle name conflicts
+            if dest_path.exists():
+                # Generate unique name
+                base = src_path.stem
+                ext = src_path.suffix
+                counter = 1
+                while dest_path.exists():
+                    dest_path = dest_dir / f"{base}_{counter}{ext}"
+                    counter += 1
+            
+            try:
+                if self.clipboard_operation == 'copy':
+                    if src_path.is_dir():
+                        shutil.copytree(src_path, dest_path)
+                    else:
+                        shutil.copy2(src_path, dest_path)
+                else:  # cut
+                    shutil.move(str(src_path), str(dest_path))
+                success += 1
+            except Exception as e:
+                failed += 1
+        
+        # Clear clipboard after cut operation
+        if self.clipboard_operation == 'cut':
+            self.clipboard = []
+            self.clipboard_operation = None
+        
+        # Clear selections
+        self.selected_files.clear()
+        
+        self.load_directory()
+        
+        if failed == 0:
+            op = "Copied" if self.clipboard_operation == 'copy' else "Moved"
+            self.message = f"{op} {success} file(s)"
+            self.message_color = curses.COLOR_GREEN
+        else:
+            self.message = f"Completed: {success} ok, {failed} failed"
+            self.message_color = curses.COLOR_YELLOW
+    
+    def delete_files(self):
+        """Delete marked files or current file"""
+        # Determine what to delete
+        if self.selected_files:
+            files_to_delete = list(self.selected_files)
+            confirm_msg = f"Delete {len(files_to_delete)} marked file(s)? (y/n)"
+        else:
+            if not self.entries or self.selected_index >= len(self.entries):
+                return
+            entry = self.entries[self.selected_index]
+            if entry['name'] == '..':
+                self.message = "Cannot delete parent directory"
+                self.message_color = curses.COLOR_YELLOW
+                return
+            files_to_delete = [entry['path']]
+            confirm_msg = f"Delete '{entry['name']}'? (y/n)"
+        
+        # Show confirmation
+        height, width = self.stdscr.getmaxyx()
+        self.stdscr.attron(curses.color_pair(9) | curses.A_BOLD)
+        self.stdscr.addstr(height - 1, 1, confirm_msg[:width-2])
+        self.stdscr.attroff(curses.color_pair(9) | curses.A_BOLD)
+        self.stdscr.refresh()
+        
+        key = self.stdscr.getch()
+        if key not in [ord('y'), ord('Y')]:
+            self.message = "Delete cancelled"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        # Perform deletion
+        success = 0
+        failed = 0
+        
+        for path in files_to_delete:
+            path = Path(path)
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                success += 1
+            except Exception as e:
+                failed += 1
+        
+        # Clear selections
+        self.selected_files.clear()
+        
+        self.load_directory()
+        
+        if failed == 0:
+            self.message = f"Deleted {success} item(s)"
+            self.message_color = curses.COLOR_GREEN
+        else:
+            self.message = f"Deleted: {success} ok, {failed} failed"
+            self.message_color = curses.COLOR_YELLOW
+    
+    def get_text_input(self, prompt, default=""):
+        """Get text input from user"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Enable cursor
+        curses.curs_set(1)
+        curses.echo()
+        
+        # Clear message line and show prompt
+        self.stdscr.addstr(height - 1, 1, " " * (width - 2))
+        self.stdscr.addstr(height - 1, 1, prompt[:width-2])
+        self.stdscr.refresh()
+        
+        # Position cursor after prompt
+        input_x = len(prompt) + 2
+        if input_x >= width - 1:
+            input_x = 1
+        
+        # Create input window
+        try:
+            input_str = ""
+            if default:
+                input_str = default
+                self.stdscr.addstr(height - 1, input_x, default[:width-input_x-1])
+            
+            while True:
+                key = self.stdscr.getch()
+                
+                if key in [ord('\n'), curses.KEY_ENTER, 10, 13]:
+                    break
+                elif key == 27:  # Escape
+                    input_str = ""
+                    break
+                elif key in [curses.KEY_BACKSPACE, 127, 8]:
+                    if input_str:
+                        input_str = input_str[:-1]
+                        self.stdscr.addstr(height - 1, input_x, input_str + " ")
+                        self.stdscr.move(height - 1, input_x + len(input_str))
+                elif 32 <= key <= 126:  # Printable characters
+                    if input_x + len(input_str) < width - 2:
+                        input_str += chr(key)
+                        self.stdscr.addch(height - 1, input_x + len(input_str) - 1, key)
+                
+                self.stdscr.refresh()
+        finally:
+            curses.noecho()
+            curses.curs_set(0)
+        
+        return input_str.strip()
+    
+    def create_new(self):
+        """Create a new file or folder"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Ask what to create
+        self.stdscr.addstr(height - 1, 1, "Create: [f]ile or [d]irectory? ", curses.color_pair(11) | curses.A_BOLD)
+        self.stdscr.refresh()
+        
+        key = self.stdscr.getch()
+        
+        if key == ord('f'):
+            name = self.get_text_input("New file name: ")
+            if not name:
+                self.message = "Cancelled"
+                self.message_color = curses.COLOR_YELLOW
+                return
+            
+            new_path = self.current_dir / name
+            if new_path.exists():
+                self.message = f"'{name}' already exists"
+                self.message_color = curses.COLOR_RED
+                return
+            
+            try:
+                new_path.touch()
+                self.message = f"Created file: {name}"
+                self.message_color = curses.COLOR_GREEN
+                self.load_directory()
+            except Exception as e:
+                self.message = f"Error: {e}"
+                self.message_color = curses.COLOR_RED
+        
+        elif key == ord('d'):
+            name = self.get_text_input("New folder name: ")
+            if not name:
+                self.message = "Cancelled"
+                self.message_color = curses.COLOR_YELLOW
+                return
+            
+            new_path = self.current_dir / name
+            if new_path.exists():
+                self.message = f"'{name}' already exists"
+                self.message_color = curses.COLOR_RED
+                return
+            
+            try:
+                new_path.mkdir(parents=True)
+                self.message = f"Created folder: {name}"
+                self.message_color = curses.COLOR_GREEN
+                self.load_directory()
+            except Exception as e:
+                self.message = f"Error: {e}"
+                self.message_color = curses.COLOR_RED
+        else:
+            self.message = "Cancelled"
+            self.message_color = curses.COLOR_YELLOW
+    
+    def rename_item(self):
+        """Rename current file or folder"""
+        if not self.entries or self.selected_index >= len(self.entries):
+            return
+        
+        entry = self.entries[self.selected_index]
+        if entry['name'] == '..':
+            self.message = "Cannot rename parent directory"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        old_path = entry['path']
+        old_name = entry['name']
+        
+        new_name = self.get_text_input(f"Rename '{old_name}' to: ", old_name)
+        if not new_name or new_name == old_name:
+            self.message = "Rename cancelled"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        new_path = old_path.parent / new_name
+        
+        if new_path.exists():
+            self.message = f"'{new_name}' already exists"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        try:
+            old_path.rename(new_path)
+            self.message = f"Renamed to: {new_name}"
+            self.message_color = curses.COLOR_GREEN
+            self.load_directory()
+        except Exception as e:
+            self.message = f"Error: {e}"
+            self.message_color = curses.COLOR_RED
+    
+    def show_operations_menu(self):
+        """Show file operations menu"""
+        height, width = self.stdscr.getmaxyx()
+        
+        menu_items = [
+            ("1", "Copy All Files", "copy_all"),
+            ("2", "Move All Files", "move_all"),
+            ("3", "Delete All Files", "delete_all"),
+            ("4", "Copy Marked Files", "copy_marked"),
+            ("5", "Move Marked Files", "move_marked"),
+            ("6", "Delete Marked Files", "delete_marked"),
+            ("7", "Mark All Files", "mark_all"),
+            ("8", "Unmark All Files", "unmark_all"),
+        ]
+        
+        # Draw menu
+        menu_width = 35
+        menu_height = len(menu_items) + 4
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+        
+        # Draw box
+        self.stdscr.attron(curses.color_pair(7))
+        self.stdscr.addstr(start_y, start_x, "╔" + "═" * (menu_width - 2) + "╗")
+        self.stdscr.addstr(start_y + 1, start_x, "║" + " FILE OPERATIONS ".center(menu_width - 2) + "║")
+        self.stdscr.addstr(start_y + 2, start_x, "╠" + "═" * (menu_width - 2) + "╣")
+        self.stdscr.attroff(curses.color_pair(7))
+        
+        for i, (key, label, action) in enumerate(menu_items):
+            y = start_y + 3 + i
+            self.stdscr.addstr(y, start_x, "║", curses.color_pair(7))
+            self.stdscr.addstr(y, start_x + 2, f"[{key}] {label}", curses.color_pair(11))
+            self.stdscr.addstr(y, start_x + menu_width - 1, "║", curses.color_pair(7))
+        
+        self.stdscr.attron(curses.color_pair(7))
+        self.stdscr.addstr(start_y + 3 + len(menu_items), start_x, "╠" + "═" * (menu_width - 2) + "╣")
+        self.stdscr.addstr(start_y + 4 + len(menu_items), start_x, "║" + " [q] Cancel ".center(menu_width - 2) + "║")
+        self.stdscr.addstr(start_y + 5 + len(menu_items), start_x, "╚" + "═" * (menu_width - 2) + "╝")
+        self.stdscr.attroff(curses.color_pair(7))
+        
+        self.stdscr.refresh()
+        
+        # Get selection
+        key = self.stdscr.getch()
+        
+        if key == ord('1'):
+            self.bulk_copy_all()
+        elif key == ord('2'):
+            self.bulk_move_all()
+        elif key == ord('3'):
+            self.bulk_delete_all()
+        elif key == ord('4'):
+            self.copy_to_clipboard()
+        elif key == ord('5'):
+            self.cut_to_clipboard()
+        elif key == ord('6'):
+            self.delete_files()
+        elif key == ord('7'):
+            self.mark_all_files()
+        elif key == ord('8'):
+            self.unmark_all_files()
+    
+    def bulk_copy_all(self):
+        """Copy all files in current directory to clipboard"""
+        files = [e['path'] for e in self.entries if not e['is_dir'] and e['name'] != '..']
+        
+        if not files:
+            self.message = "No files to copy"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        self.clipboard = files
+        self.clipboard_operation = 'copy'
+        self.message = f"Copied {len(files)} file(s) to clipboard - navigate and press 'v' to paste"
+        self.message_color = curses.COLOR_GREEN
+    
+    def bulk_move_all(self):
+        """Move all files in current directory to clipboard"""
+        files = [e['path'] for e in self.entries if not e['is_dir'] and e['name'] != '..']
+        
+        if not files:
+            self.message = "No files to move"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        self.clipboard = files
+        self.clipboard_operation = 'cut'
+        self.message = f"Cut {len(files)} file(s) - navigate and press 'v' to paste"
+        self.message_color = curses.COLOR_GREEN
+    
+    def bulk_delete_all(self):
+        """Delete all files in current directory"""
+        files = [e for e in self.entries if not e['is_dir'] and e['name'] != '..']
+        
+        if not files:
+            self.message = "No files to delete"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        # Confirm
+        height, width = self.stdscr.getmaxyx()
+        confirm_msg = f"DELETE ALL {len(files)} FILES in this folder? (y/n)"
+        self.stdscr.attron(curses.color_pair(9) | curses.A_BOLD)
+        self.stdscr.addstr(height - 1, 1, confirm_msg[:width-2])
+        self.stdscr.attroff(curses.color_pair(9) | curses.A_BOLD)
+        self.stdscr.refresh()
+        
+        key = self.stdscr.getch()
+        if key not in [ord('y'), ord('Y')]:
+            self.message = "Delete cancelled"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        # Delete files
+        success = 0
+        failed = 0
+        
+        for entry in files:
+            try:
+                Path(entry['path']).unlink()
+                success += 1
+            except:
+                failed += 1
+        
+        self.load_directory()
+        
+        if failed == 0:
+            self.message = f"Deleted {success} file(s)"
+            self.message_color = curses.COLOR_GREEN
+        else:
+            self.message = f"Deleted: {success} ok, {failed} failed"
+            self.message_color = curses.COLOR_YELLOW
+
     def run(self):
         """Main loop"""
         while self.running:
@@ -1165,6 +1674,46 @@ class FileManager:
             elif key == ord('f'):
                 # Find empty folders
                 self.find_empty_folders()
+            
+            elif key == ord(' '):
+                # Toggle mark on current file
+                self.toggle_mark()
+            
+            elif key == ord('a'):
+                # Mark all files in current directory
+                self.mark_all_files()
+            
+            elif key == ord('u'):
+                # Unmark all files
+                self.unmark_all_files()
+            
+            elif key == ord('c'):
+                # Copy to clipboard
+                self.copy_to_clipboard()
+            
+            elif key == ord('x'):
+                # Cut to clipboard
+                self.cut_to_clipboard()
+            
+            elif key == ord('v'):
+                # Paste from clipboard
+                self.paste_from_clipboard()
+            
+            elif key == ord('d'):
+                # Delete file(s)
+                self.delete_files()
+            
+            elif key == ord('n'):
+                # Create new file or folder
+                self.create_new()
+            
+            elif key == ord('R'):
+                # Rename current file/folder
+                self.rename_item()
+            
+            elif key == ord('o'):
+                # Show operations menu
+                self.show_operations_menu()
 
 
 class AudioInspector:
