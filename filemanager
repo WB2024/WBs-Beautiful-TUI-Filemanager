@@ -536,6 +536,18 @@ class FileManager:
         ext = path.suffix.lower()
         return ext in video_extensions
     
+    def is_image_file(self, path):
+        """Check if a file is an image file"""
+        image_extensions = {
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif',
+            '.webp', '.svg', '.ico', '.heic', '.heif', '.avif',
+            '.raw', '.cr2', '.nef', '.arw', '.dng', '.psd', '.xcf'
+        }
+        
+        path = Path(path)
+        ext = path.suffix.lower()
+        return ext in image_extensions
+    
     def handle_enter(self):
         """Handle Enter key - open directory or file"""
         if not self.entries:
@@ -556,6 +568,12 @@ class FileManager:
             elif self.is_video_file(entry['path']):
                 # Open video inspector
                 inspector = VideoInspector(self.stdscr, entry['path'], self)
+                inspector.run()
+                # Reload directory after inspection
+                self.load_directory()
+            elif self.is_image_file(entry['path']):
+                # Open image inspector
+                inspector = ImageInspector(self.stdscr, entry['path'], self)
                 inspector.run()
                 # Reload directory after inspection
                 self.load_directory()
@@ -3155,6 +3173,667 @@ class VideoInspector:
     def run(self):
         """Main inspector loop"""
         self.video_info = self.analyze_file(self.filepath)
+        curses.curs_set(0)
+        
+        while self.running:
+            self.draw()
+            key = self.stdscr.getch()
+            
+            if key in [ord('q'), 27]:  # q or ESC
+                if self.show_comparison:
+                    # If in comparison mode, go back to single view
+                    self.show_comparison = False
+                    self.compare_file = None
+                    self.compare_info = None
+                    self.message = ""
+                else:
+                    # Exit inspector
+                    self.running = False
+            
+            elif key == ord('c'):
+                if self.show_comparison:
+                    # Clear comparison
+                    self.show_comparison = False
+                    self.compare_file = None
+                    self.compare_info = None
+                    self.message = "Comparison cleared"
+                    self.message_color = curses.COLOR_GREEN
+                else:
+                    # Start comparison
+                    self.browse_for_comparison()
+
+
+class ImageInspector:
+    """Image file quality inspector with comparison capabilities"""
+    
+    def __init__(self, stdscr, filepath, file_manager=None):
+        self.stdscr = stdscr
+        self.filepath = Path(filepath)
+        self.file_manager = file_manager
+        self.running = True
+        self.message = ""
+        self.message_color = curses.COLOR_GREEN
+        self.image_info = None
+        self.compare_file = None
+        self.compare_info = None
+        self.show_comparison = False
+        
+        # Initialize colors
+        curses.start_color()
+        curses.use_default_colors()
+        
+        # Initialize color pairs needed by inspector
+        curses.init_pair(2, curses.COLOR_GREEN, -1)     # High quality values
+        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)  # Headers
+        curses.init_pair(8, curses.COLOR_GREEN, -1)     # Success
+        curses.init_pair(9, curses.COLOR_RED, -1)       # Error
+        curses.init_pair(10, curses.COLOR_YELLOW, -1)   # Warning
+        curses.init_pair(11, curses.COLOR_BLUE, -1)     # Info
+        curses.init_pair(26, curses.COLOR_WHITE, -1)    # Normal text
+        
+        # Analyze current file
+        self.analyze_file(self.filepath)
+    
+    def check_ffprobe(self):
+        """Check if ffprobe is available"""
+        return shutil.which('ffprobe') is not None
+    
+    def analyze_file(self, filepath):
+        """Analyze image file using ffprobe"""
+        if not self.check_ffprobe():
+            return {
+                'error': 'ffprobe not installed',
+                'message': 'Install ffmpeg: sudo apt install ffmpeg'
+            }
+        
+        def safe_int(value, default=0):
+            """Safely convert value to int"""
+            if value is None or value == '':
+                return default
+            try:
+                return int(float(str(value)))
+            except (ValueError, TypeError):
+                return default
+        
+        def safe_float(value, default=0.0):
+            """Safely convert value to float"""
+            if value is None or value == '':
+                return default
+            try:
+                return float(str(value))
+            except (ValueError, TypeError):
+                return default
+        
+        try:
+            # Run ffprobe to get image information
+            cmd = [
+                'ffprobe',
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams',
+                str(filepath)
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            
+            if result.returncode != 0:
+                return {'error': f'Failed to analyze file (exit code {result.returncode})'}
+            
+            if not result.stdout.strip():
+                return {'error': 'ffprobe returned no data'}
+            
+            import json
+            try:
+                data = json.loads(result.stdout)
+            except json.JSONDecodeError as e:
+                return {'error': f'Invalid ffprobe output: {str(e)}'}
+            
+            # Extract image stream
+            image_stream = None
+            for stream in data.get('streams', []):
+                if stream.get('codec_type') == 'video':
+                    image_stream = stream
+                    break
+            
+            if not image_stream:
+                return {'error': 'No image data found in file'}
+            
+            # Extract format info
+            format_info = data.get('format', {})
+            
+            # Get file size
+            file_size = safe_int(format_info.get('size'), 0)
+            if file_size == 0:
+                try:
+                    file_size = Path(filepath).stat().st_size
+                except:
+                    pass
+            
+            # Get dimensions
+            width = safe_int(image_stream.get('width'), 0)
+            height = safe_int(image_stream.get('height'), 0)
+            
+            # Calculate megapixels
+            megapixels = (width * height) / 1000000.0 if width and height else 0
+            
+            # Get codec info
+            codec = image_stream.get('codec_name', 'Unknown')
+            codec_long = image_stream.get('codec_long_name', 'Unknown')
+            
+            # Get bit depth
+            bit_depth_raw = image_stream.get('bits_per_raw_sample')
+            pix_fmt = image_stream.get('pix_fmt', 'unknown')
+            
+            # Determine bit depth from pix_fmt if not directly available
+            bit_depth = safe_int(bit_depth_raw, 0)
+            if bit_depth == 0:
+                if '16' in pix_fmt or 'p16' in pix_fmt:
+                    bit_depth = 16
+                elif '10' in pix_fmt or 'p10' in pix_fmt:
+                    bit_depth = 10
+                elif '12' in pix_fmt or 'p12' in pix_fmt:
+                    bit_depth = 12
+                else:
+                    bit_depth = 8  # Default assumption
+            
+            # Detect color space
+            color_space = image_stream.get('color_space', 'unknown')
+            if color_space == 'unknown':
+                # Try to infer from pix_fmt
+                if 'rgb' in pix_fmt.lower():
+                    color_space = 'RGB'
+                elif 'yuv' in pix_fmt.lower() or 'yuvj' in pix_fmt.lower():
+                    color_space = 'YUV'
+                elif 'gray' in pix_fmt.lower():
+                    color_space = 'Grayscale'
+                else:
+                    color_space = 'Unknown'
+            
+            # Detect alpha channel
+            has_alpha = 'a' in pix_fmt.lower() and 'ya' not in pix_fmt.lower() or 'rgba' in pix_fmt.lower() or 'argb' in pix_fmt.lower()
+            
+            # Determine if lossless
+            lossless_formats = ['png', 'tiff', 'bmp', 'raw', 'psd', 'gif', 'webp']  # webp can be both
+            is_lossless = codec.lower() in lossless_formats
+            
+            # For webp, check if it's lossless (harder to detect, assume lossy unless very small compression)
+            if codec.lower() == 'webp':
+                # Rough heuristic: if file size is close to raw size, likely lossless
+                raw_size = width * height * (bit_depth / 8) * 3  # Approximate
+                if file_size > raw_size * 0.5:
+                    is_lossless = True
+            
+            # Build comprehensive image info
+            info = {
+                'filepath': filepath,
+                'filename': Path(filepath).name,
+                'file_size': file_size,
+                'format_name': format_info.get('format_name', 'Unknown'),
+                'codec': codec,
+                'codec_long': codec_long,
+                'width': width,
+                'height': height,
+                'megapixels': megapixels,
+                'bit_depth': bit_depth,
+                'pix_fmt': pix_fmt,
+                'color_space': color_space,
+                'has_alpha': has_alpha,
+                'is_lossless': is_lossless,
+                'aspect_ratio': self.calculate_aspect_ratio(width, height),
+                'tags': format_info.get('tags', {}),
+            }
+            
+            # Calculate compression ratio
+            raw_size = width * height * (bit_depth / 8) * (4 if has_alpha else 3)
+            if file_size > 0 and raw_size > 0:
+                info['compression_ratio'] = raw_size / file_size
+            else:
+                info['compression_ratio'] = 1.0
+            
+            return info
+            
+        except subprocess.TimeoutExpired:
+            return {'error': 'Analysis timeout (file too large or slow disk)'}
+        except Exception as e:
+            return {'error': f'Analysis failed: {type(e).__name__}: {str(e)}'}
+    
+    def calculate_aspect_ratio(self, width, height):
+        """Calculate aspect ratio as a string like 16:9"""
+        if width == 0 or height == 0:
+            return "N/A"
+        
+        from math import gcd
+        divisor = gcd(width, height)
+        ratio_w = width // divisor
+        ratio_h = height // divisor
+        
+        # Simplify common ratios
+        common_ratios = {
+            (16, 9): "16:9",
+            (4, 3): "4:3",
+            (3, 2): "3:2",
+            (1, 1): "1:1",
+            (21, 9): "21:9",
+            (5, 4): "5:4",
+            (16, 10): "16:10",
+        }
+        
+        for (w, h), name in common_ratios.items():
+            if abs(ratio_w / ratio_h - w / h) < 0.01:
+                return name
+        
+        # Return simplified ratio if not common
+        if ratio_w > 100 or ratio_h > 100:
+            # Too complex, return decimal
+            return f"{width/height:.2f}:1"
+        
+        return f"{ratio_w}:{ratio_h}"
+    
+    def get_resolution_name(self, width, height):
+        """Get common resolution names for images"""
+        megapixels = (width * height) / 1000000.0
+        
+        if megapixels >= 100:
+            return f"Ultra High ({megapixels:.0f} MP)"
+        elif megapixels >= 50:
+            return f"Very High ({megapixels:.1f} MP)"
+        elif megapixels >= 20:
+            return f"High ({megapixels:.1f} MP)"
+        elif megapixels >= 12:
+            return f"Standard ({megapixels:.1f} MP)"
+        elif megapixels >= 5:
+            return f"Medium ({megapixels:.1f} MP)"
+        elif megapixels >= 2:
+            return f"Low ({megapixels:.1f} MP)"
+        else:
+            return f"Very Low ({megapixels:.2f} MP)"
+    
+    def get_quality_score(self, info):
+        """Calculate quality score (0-100) based on image metrics"""
+        if 'error' in info:
+            return 0
+        
+        score = 0
+        
+        # Resolution/Megapixels scoring (max 35 points)
+        mp = info.get('megapixels', 0)
+        if mp >= 50:
+            score += 35
+        elif mp >= 24:
+            score += 32
+        elif mp >= 12:
+            score += 28
+        elif mp >= 8:
+            score += 24
+        elif mp >= 4:
+            score += 20
+        elif mp >= 2:
+            score += 15
+        elif mp >= 1:
+            score += 10
+        else:
+            score += 5
+        
+        # Format/Lossless scoring (max 25 points)
+        if info.get('is_lossless', False):
+            score += 25
+        else:
+            # Lossy formats get partial credit
+            codec = info.get('codec', '').lower()
+            if codec in ['jpeg', 'jpg']:
+                score += 15  # JPEG is efficient
+            elif codec in ['webp']:
+                score += 18  # WebP lossy is good
+            elif codec in ['avif']:
+                score += 20  # AVIF is very efficient
+            else:
+                score += 12
+        
+        # Bit depth scoring (max 20 points)
+        bit_depth = info.get('bit_depth', 8)
+        if bit_depth >= 16:
+            score += 20
+        elif bit_depth >= 12:
+            score += 17
+        elif bit_depth >= 10:
+            score += 14
+        elif bit_depth >= 8:
+            score += 10
+        else:
+            score += 5
+        
+        # Color features scoring (max 10 points)
+        if info.get('has_alpha', False):
+            score += 3  # Alpha channel support
+        
+        color_space = info.get('color_space', '').upper()
+        if 'RGB' in color_space:
+            score += 7
+        elif 'YUV' in color_space:
+            score += 5
+        else:
+            score += 3
+        
+        # Compression efficiency scoring (max 10 points)
+        ratio = info.get('compression_ratio', 1.0)
+        if ratio >= 10:
+            score += 10  # Very efficient
+        elif ratio >= 5:
+            score += 8
+        elif ratio >= 2:
+            score += 6
+        else:
+            score += 4
+        
+        return min(100, score)
+    
+    def get_quality_label(self, score):
+        """Get quality label and color from score"""
+        if score >= 90:
+            return "Exceptional", curses.color_pair(2)  # Green
+        elif score >= 75:
+            return "Excellent", curses.color_pair(2)
+        elif score >= 60:
+            return "Very Good", curses.color_pair(11)  # Blue
+        elif score >= 45:
+            return "Good", curses.color_pair(10)  # Yellow
+        elif score >= 30:
+            return "Fair", curses.color_pair(10)
+        else:
+            return "Poor", curses.color_pair(9)  # Red
+    
+    def format_size(self, size_bytes):
+        """Format bytes to human readable"""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.2f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.2f} TB"
+    
+    def draw_header(self):
+        """Draw header"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Title
+        if self.show_comparison:
+            title = " IMAGE QUALITY COMPARISON "
+        else:
+            title = " IMAGE QUALITY INSPECTOR "
+        
+        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+        self.stdscr.addstr(0, 0, title.center(width)[:width])
+        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        
+        # Separator
+        self.stdscr.addstr(1, 0, "-" * width)
+    
+    def draw_footer(self):
+        """Draw footer with help"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Separator
+        self.stdscr.addstr(height - 3, 0, "-" * width)
+        
+        # Help text
+        if self.show_comparison:
+            help_text = "c: Clear Comparison | q: Back to Inspector | ESC: Exit"
+        else:
+            help_text = "c: Compare with Another Image | q/ESC: Exit"
+        
+        self.stdscr.addstr(height - 2, 1, help_text[:width-2], curses.color_pair(11))
+        
+        # Message
+        if self.message:
+            color = curses.color_pair(8) if self.message_color == curses.COLOR_GREEN else \
+                    curses.color_pair(9) if self.message_color == curses.COLOR_RED else \
+                    curses.color_pair(10)
+            self.stdscr.addstr(height - 1, 1, self.message[:width-2], color | curses.A_BOLD)
+    
+    def draw_image_info(self, info, start_y, start_x, width, label=None):
+        """Draw image information panel"""
+        if 'error' in info:
+            self.stdscr.addstr(start_y, start_x, f"Error: {info['error']}", curses.color_pair(9))
+            if 'message' in info:
+                self.stdscr.addstr(start_y + 1, start_x, info['message'], curses.color_pair(10))
+            return start_y + 3
+        
+        current_y = start_y
+        
+        # File label if provided
+        if label:
+            self.stdscr.addstr(current_y, start_x, label, curses.color_pair(7) | curses.A_BOLD)
+            current_y += 1
+        
+        # Filename
+        filename = info['filename']
+        if len(filename) > width - 6:
+            filename = filename[:width-9] + "..."
+        self.stdscr.addstr(current_y, start_x, f"{filename}", curses.color_pair(11) | curses.A_BOLD)
+        current_y += 2
+        
+        # Quality Score
+        score = self.get_quality_score(info)
+        quality_label, quality_color = self.get_quality_label(score)
+        self.stdscr.addstr(current_y, start_x, "Quality Score:", curses.A_BOLD)
+        self.stdscr.addstr(current_y, start_x + 16, f"{score}/100 ({quality_label})", quality_color | curses.A_BOLD)
+        current_y += 2
+        
+        # File Size
+        self.stdscr.addstr(current_y, start_x, "File Size:")
+        self.stdscr.addstr(current_y, start_x + 16, self.format_size(info['file_size']), curses.color_pair(26))
+        current_y += 1
+        
+        # Dimensions
+        self.stdscr.addstr(current_y, start_x, "Dimensions:")
+        dim_display = f"{info['width']} x {info['height']}"
+        self.stdscr.addstr(current_y, start_x + 16, dim_display, curses.color_pair(26))
+        current_y += 1
+        
+        # Megapixels
+        self.stdscr.addstr(current_y, start_x, "Megapixels:")
+        mp_display = f"{info['megapixels']:.2f} MP"
+        mp_color = curses.color_pair(2) if info['megapixels'] >= 12 else curses.color_pair(26)
+        self.stdscr.addstr(current_y, start_x + 16, mp_display, mp_color)
+        current_y += 1
+        
+        # Resolution Category
+        self.stdscr.addstr(current_y, start_x, "Resolution:")
+        res_name = self.get_resolution_name(info['width'], info['height'])
+        self.stdscr.addstr(current_y, start_x + 16, res_name, curses.color_pair(26))
+        current_y += 1
+        
+        # Aspect Ratio
+        self.stdscr.addstr(current_y, start_x, "Aspect Ratio:")
+        self.stdscr.addstr(current_y, start_x + 16, info['aspect_ratio'], curses.color_pair(26))
+        current_y += 1
+        
+        # Format
+        self.stdscr.addstr(current_y, start_x, "Format:")
+        format_display = info['codec'].upper()
+        lossless_color = curses.color_pair(2) if info['is_lossless'] else curses.color_pair(26)
+        if info['is_lossless']:
+            format_display += " (Lossless)"
+        else:
+            format_display += " (Lossy)"
+        self.stdscr.addstr(current_y, start_x + 16, format_display, lossless_color)
+        current_y += 1
+        
+        # Bit Depth
+        self.stdscr.addstr(current_y, start_x, "Bit Depth:")
+        bd_display = f"{info['bit_depth']}-bit"
+        bd_color = curses.color_pair(2) if info['bit_depth'] >= 16 else curses.color_pair(26)
+        self.stdscr.addstr(current_y, start_x + 16, bd_display, bd_color)
+        current_y += 1
+        
+        # Color Space
+        self.stdscr.addstr(current_y, start_x, "Color Space:")
+        self.stdscr.addstr(current_y, start_x + 16, info['color_space'], curses.color_pair(26))
+        current_y += 1
+        
+        # Alpha Channel
+        self.stdscr.addstr(current_y, start_x, "Alpha Channel:")
+        alpha_display = "Yes" if info['has_alpha'] else "No"
+        alpha_color = curses.color_pair(2) if info['has_alpha'] else curses.color_pair(26)
+        self.stdscr.addstr(current_y, start_x + 16, alpha_display, alpha_color)
+        current_y += 1
+        
+        # Compression Ratio
+        self.stdscr.addstr(current_y, start_x, "Compression:")
+        ratio = info.get('compression_ratio', 1.0)
+        comp_display = f"{ratio:.1f}x"
+        self.stdscr.addstr(current_y, start_x + 16, comp_display, curses.color_pair(26))
+        current_y += 1
+        
+        return current_y
+    
+    def draw_comparison(self):
+        """Draw comparison view"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Calculate panel width
+        panel_width = (width - 4) // 2
+        
+        # Draw left panel (original file)
+        left_x = 2
+        current_y = self.draw_image_info(self.image_info, 3, left_x, panel_width, "FILE 1 (Current)")
+        
+        # Draw separator
+        sep_x = panel_width + 2
+        for y in range(2, height - 3):
+            self.stdscr.addstr(y, sep_x, "|", curses.color_pair(11))
+        
+        # Draw right panel (comparison file)
+        right_x = sep_x + 2
+        current_y = self.draw_image_info(self.compare_info, 3, right_x, panel_width, "FILE 2 (Compare)")
+        
+        # Draw winner indicator
+        if 'error' not in self.image_info and 'error' not in self.compare_info:
+            score1 = self.get_quality_score(self.image_info)
+            score2 = self.get_quality_score(self.compare_info)
+            
+            winner_y = max(current_y, height - 8)
+            if winner_y < height - 3:
+                self.stdscr.addstr(winner_y, 0, "-" * width)
+                winner_y += 1
+                
+                if score1 > score2:
+                    msg = f"FILE 1 IS HIGHER QUALITY (by {score1 - score2} points)"
+                    self.stdscr.addstr(winner_y, max(0, (width - len(msg)) // 2), msg, curses.color_pair(2) | curses.A_BOLD)
+                    winner_y += 1
+                    rec_msg = "Recommendation: Keep File 1"
+                    self.stdscr.addstr(winner_y, max(0, (width - len(rec_msg)) // 2), rec_msg, curses.color_pair(11))
+                elif score2 > score1:
+                    msg = f"FILE 2 IS HIGHER QUALITY (by {score2 - score1} points)"
+                    self.stdscr.addstr(winner_y, max(0, (width - len(msg)) // 2), msg, curses.color_pair(2) | curses.A_BOLD)
+                    winner_y += 1
+                    rec_msg = "Recommendation: Keep File 2"
+                    self.stdscr.addstr(winner_y, max(0, (width - len(rec_msg)) // 2), rec_msg, curses.color_pair(11))
+                else:
+                    msg = "BOTH FILES HAVE EQUAL QUALITY"
+                    self.stdscr.addstr(winner_y, max(0, (width - len(msg)) // 2), msg, curses.color_pair(10) | curses.A_BOLD)
+    
+    def draw_single_view(self):
+        """Draw single file view"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Center the info panel
+        panel_width = min(60, width - 4)
+        start_x = (width - panel_width) // 2
+        
+        self.draw_image_info(self.image_info, 3, start_x, panel_width)
+    
+    def draw(self):
+        """Draw the inspector interface"""
+        self.stdscr.clear()
+        self.draw_header()
+        
+        if self.show_comparison and self.compare_info:
+            self.draw_comparison()
+        else:
+            self.draw_single_view()
+        
+        self.draw_footer()
+        self.stdscr.refresh()
+    
+    def browse_for_comparison(self):
+        """Browse for a file to compare"""
+        if not self.file_manager:
+            self.message = "File browser not available"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        # Show message
+        self.message = "Navigate to comparison file and press Enter, or ESC to cancel"
+        self.message_color = curses.COLOR_YELLOW
+        self.draw()
+        self.stdscr.getch()
+        
+        # Temporarily return to file manager for selection
+        curses.curs_set(0)
+        
+        # Create message showing the first file being compared
+        first_file_name = self.filepath.name
+        first_file_path = str(self.filepath.parent)
+        
+        # Truncate path if too long
+        height, width = self.stdscr.getmaxyx()
+        max_path_len = width - 60
+        if len(first_file_path) > max_path_len:
+            first_file_path = "..." + first_file_path[-(max_path_len-3):]
+        
+        comparison_msg = f"Comparing FROM: {first_file_name} ({first_file_path})"
+        
+        while True:
+            # Update message each iteration to show first file info
+            self.file_manager.message = f"{comparison_msg} | Select 2nd image (Enter) or q to cancel"
+            self.file_manager.message_color = curses.COLOR_YELLOW
+            
+            self.file_manager.draw()
+            key = self.stdscr.getch()
+            
+            if key == ord('q') or key == 27:  # q or ESC
+                self.message = "Comparison cancelled"
+                self.message_color = curses.COLOR_YELLOW
+                self.file_manager.message = ""
+                return
+            
+            elif key == curses.KEY_UP:
+                self.file_manager.selected_index = max(0, self.file_manager.selected_index - 1)
+            
+            elif key == curses.KEY_DOWN:
+                self.file_manager.selected_index = min(len(self.file_manager.entries) - 1, 
+                                                       self.file_manager.selected_index + 1)
+            
+            elif key in [ord('\n'), curses.KEY_ENTER, 10, 13]:
+                # Check if selected file is image
+                entry = self.file_manager.entries[self.file_manager.selected_index]
+                
+                if entry['is_dir']:
+                    # Navigate into directory
+                    self.file_manager.change_directory(entry['path'])
+                elif self.file_manager.is_image_file(entry['path']):
+                    # Selected an image file
+                    self.compare_file = entry['path']
+                    self.compare_info = self.analyze_file(self.compare_file)
+                    self.show_comparison = True
+                    self.message = "Comparison loaded!"
+                    self.message_color = curses.COLOR_GREEN
+                    self.file_manager.message = ""
+                    return
+                else:
+                    # Keep showing the comparison_msg but add error
+                    self.file_manager.message = f"{comparison_msg} | ERROR: Please select an image file"
+                    self.file_manager.message_color = curses.COLOR_RED
+            
+            elif key in [curses.KEY_BACKSPACE, 127, 8]:
+                # Go up one directory
+                if self.file_manager.current_dir != self.file_manager.current_dir.parent:
+                    self.file_manager.change_directory(self.file_manager.current_dir.parent)
+    
+    def run(self):
+        """Main inspector loop"""
+        self.image_info = self.analyze_file(self.filepath)
         curses.curs_set(0)
         
         while self.running:

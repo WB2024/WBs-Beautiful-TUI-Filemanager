@@ -111,7 +111,37 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 - **Supported formats**: MP4, MKV, AVI, MOV, WMV, FLV, WebM, M4V, MPG, MPEG, 3GP, OGV, TS, M2TS, VOB, DivX, XviD, and more
 - **Easy navigation**: Browse to second file without leaving inspector
 
-### 🔖 Bookmark System
+### �️ Image Quality Inspector
+- **Professional image analysis** using ffprobe
+- **Press Enter on image files** to inspect quality
+- **Comprehensive metrics**:
+  - File size
+  - Dimensions (width x height)
+  - Megapixels
+  - Resolution category (Ultra High, Very High, High, Medium, Low)
+  - Aspect ratio (16:9, 4:3, 3:2, etc.)
+  - Format/codec (PNG, JPEG, WebP, TIFF, etc.)
+  - Lossless vs Lossy detection
+  - Bit depth (8-bit, 10-bit, 16-bit)
+  - Color space (RGB, YUV, Grayscale)
+  - Alpha channel detection
+  - Compression ratio
+  - Quality score (0-100)
+- **Quality indicators**:
+  - Color-coded ratings (Exceptional, Excellent, Very Good, Good, Fair, Poor)
+  - Lossless format highlighting (PNG, TIFF, BMP)
+  - High resolution highlighting (12+ MP)
+  - High bit depth highlighting (16-bit)
+- **File comparison mode**:
+  - Compare two images side-by-side
+  - Quality score comparison
+  - Clear winner indication
+  - Recommendation on which file to keep
+  - Perfect for finding the best version of duplicate images
+- **Supported formats**: JPG, JPEG, PNG, GIF, BMP, TIFF, WebP, SVG, ICO, HEIC, HEIF, AVIF, RAW, CR2, NEF, ARW, DNG, PSD, XCF
+- **Easy navigation**: Browse to second file without leaving inspector
+
+### �🔖 Bookmark System
 - **Save favorite directories** with custom names
 - **Quick access** to frequently used locations
 - **Persistent storage** - Bookmarks saved to `~/.filemanager_config.json`
@@ -413,6 +443,19 @@ When inspecting an audio file:
 ### Video Inspector Controls
 
 When inspecting a video file:
+
+| Key | Action |
+|-----|--------|
+| `c` | Start/Clear comparison mode |
+| `q` | Exit inspector (or return to single view from comparison) |
+| `ESC` | Exit inspector (or return to single view from comparison) |
+| `↑` / `↓` | Navigate files (in comparison browse mode) |
+| `Enter` | Select file for comparison (in comparison browse mode) |
+| `Backspace` | Go up directory (in comparison browse mode) |
+
+### Image Inspector Controls
+
+When inspecting an image file:
 
 | Key | Action |
 |-----|--------|
