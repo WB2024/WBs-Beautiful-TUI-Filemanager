@@ -1238,14 +1238,15 @@ class AudioInspector:
             duration = float(format_info.get('duration', 0))
             
             # Extract bitrate with fallback calculation
-            stream_bitrate = audio_stream.get('bit_rate')
-            format_bitrate = format_info.get('bit_rate')
+            stream_bitrate = audio_stream.get('bit_rate', None)
+            format_bitrate = format_info.get('bit_rate', None)
             
-            if stream_bitrate:
-                bit_rate = int(stream_bitrate)
+            # Determine bitrate and source
+            if stream_bitrate is not None and stream_bitrate != '':
+                bit_rate = int(float(stream_bitrate))
                 bitrate_source = 'stream'  # Extracted from audio stream
-            elif format_bitrate:
-                bit_rate = int(format_bitrate)
+            elif format_bitrate is not None and format_bitrate != '':
+                bit_rate = int(float(format_bitrate))
                 bitrate_source = 'format'  # Extracted from container format
             elif file_size > 0 and duration > 0:
                 # Calculate from file size and duration
@@ -1769,15 +1770,16 @@ class VideoInspector:
             duration = float(format_info.get('duration', 0))
             
             # Extract video bitrate with fallback calculation
-            video_stream_bitrate = video_stream.get('bit_rate')
-            format_bitrate = format_info.get('bit_rate')
+            video_stream_bitrate = video_stream.get('bit_rate', None)
+            format_bitrate = format_info.get('bit_rate', None)
             
-            if video_stream_bitrate:
-                video_bitrate = int(video_stream_bitrate)
+            # Determine video bitrate and source
+            if video_stream_bitrate is not None and video_stream_bitrate != '':
+                video_bitrate = int(float(video_stream_bitrate))
                 video_bitrate_source = 'stream'
-            elif format_bitrate:
+            elif format_bitrate is not None and format_bitrate != '':
                 # Use total bitrate, will subtract audio if available
-                video_bitrate = int(format_bitrate)
+                video_bitrate = int(float(format_bitrate))
                 video_bitrate_source = 'format'
             elif file_size > 0 and duration > 0:
                 # Calculate from file size
@@ -1791,18 +1793,17 @@ class VideoInspector:
             audio_bitrate = 0
             audio_bitrate_source = 'unavailable'
             if audio_stream:
-                audio_stream_bitrate = audio_stream.get('bit_rate')
-                if audio_stream_bitrate:
-                    audio_bitrate = int(audio_stream_bitrate)
+                audio_stream_bitrate = audio_stream.get('bit_rate', None)
+                if audio_stream_bitrate is not None and audio_stream_bitrate != '':
+                    audio_bitrate = int(float(audio_stream_bitrate))
                     audio_bitrate_source = 'stream'
                     # If video bitrate came from format, subtract audio to get video-only
-                    if video_bitrate_source == 'format':
+                    if video_bitrate_source == 'format' and audio_bitrate > 0:
                         video_bitrate = max(0, video_bitrate - audio_bitrate)
-                elif duration > 0:
+                elif duration > 0 and video_bitrate > 0:
                     # Estimate audio bitrate (typical audio is 5-10% of total)
-                    # This is a rough estimate
-                    estimated_audio = int(video_bitrate * 0.07) if video_bitrate > 0 else 128000
-                    audio_bitrate = min(estimated_audio, 320000)  # Cap at 320kbps
+                    estimated_audio = int(video_bitrate * 0.07)
+                    audio_bitrate = min(max(128000, estimated_audio), 320000)  # 128-320 kbps range
                     audio_bitrate_source = 'estimated'
             
             # Build comprehensive video info
@@ -1834,7 +1835,7 @@ class VideoInspector:
                 'audio_channels': int(audio_stream.get('channels', 0)) if audio_stream else 0,
                 
                 # Overall bitrate
-                'total_bitrate': int(format_info.get('bit_rate', 0)) if format_info.get('bit_rate') else video_bitrate + audio_bitrate,
+                'total_bitrate': int(float(format_bitrate)) if (format_bitrate is not None and format_bitrate != '') else (video_bitrate + audio_bitrate),
                 
                 'tags': format_info.get('tags', {}),
             }
