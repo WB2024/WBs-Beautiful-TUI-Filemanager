@@ -1292,6 +1292,17 @@ class AudioInspector:
                 bit_rate = 0
                 bitrate_source = 'unavailable'
             
+            # Extract bit depth - try multiple fields as different codecs use different fields
+            # FLAC uses bits_per_raw_sample, others use bits_per_sample
+            bit_depth_raw = audio_stream.get('bits_per_raw_sample')
+            bit_depth_sample = audio_stream.get('bits_per_sample')
+            
+            # Try bits_per_raw_sample first (used by FLAC, ALAC, etc.)
+            bit_depth = safe_int(bit_depth_raw, 0)
+            if bit_depth == 0:
+                # Fall back to bits_per_sample (used by PCM, etc.)
+                bit_depth = safe_int(bit_depth_sample, 0)
+            
             # Build comprehensive audio info
             info = {
                 'filepath': filepath,
@@ -1306,7 +1317,7 @@ class AudioInspector:
                 'bitrate_source': bitrate_source,
                 'channels': safe_int(audio_stream.get('channels'), 0),
                 'channel_layout': audio_stream.get('channel_layout', 'Unknown'),
-                'bit_depth': audio_stream.get('bits_per_sample', audio_stream.get('bits_per_raw_sample', 'N/A')),
+                'bit_depth': bit_depth if bit_depth > 0 else 'N/A',
                 'bits_per_sample': audio_stream.get('bits_per_sample', 'N/A'),
                 'tags': format_info.get('tags', {}),
             }
@@ -1545,10 +1556,12 @@ class AudioInspector:
         
         # Bit Depth
         self.stdscr.addstr(current_y, start_x, "Bit Depth:")
-        bd_display = str(info['bit_depth']) if info['bit_depth'] != 'N/A' else 'N/A'
-        if bd_display != 'N/A':
-            bd_display += " bit"
-        bd_color = curses.color_pair(2) if bd_display != 'N/A' and int(info['bit_depth']) >= 16 else curses.color_pair(26)
+        if info['bit_depth'] != 'N/A' and info['bit_depth'] > 0:
+            bd_display = f"{info['bit_depth']} bit"
+            bd_color = curses.color_pair(2) if info['bit_depth'] >= 16 else curses.color_pair(26)
+        else:
+            bd_display = "N/A"
+            bd_color = curses.color_pair(26)
         self.stdscr.addstr(current_y, start_x + 16, bd_display, bd_color)
         current_y += 1
         
