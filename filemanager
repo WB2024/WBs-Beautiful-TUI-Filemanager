@@ -357,12 +357,12 @@ class FileManager:
         if self.show_help:
             help_lines = [
                 "↑/↓: Navigate  Enter: Open  Backspace: Up  h: Home  r: Root  ?: Help",
-                "Space: Mark  a: Mark All  u: Unmark All  o: Operations Menu",
+                "Space: Mark  a: Mark All  u: Unmark  o: Operations  t: Tools",
                 "c: Copy  x: Cut  v: Paste  d: Delete  n: New  R: Rename  q: Quit"
             ]
         else:
             help_lines = [
-                "?: Help  Space: Mark  o: Ops  c: Copy  x: Cut  v: Paste  d: Del  n: New"
+                "?: Help  Space: Mark  o: Ops  t: Tools  c: Copy  x: Cut  v: Paste  d: Del"
             ]
         
         for i, line in enumerate(help_lines):
@@ -1618,6 +1618,204 @@ class FileManager:
             self.message = f"Deleted: {success} ok, {failed} failed"
             self.message_color = curses.COLOR_YELLOW
 
+    def show_tools_menu(self):
+        """Show tools menu for audio conversion and extraction"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Count audio files and archives in current directory
+        audio_count = sum(1 for e in self.entries if not e['is_dir'] and self.is_audio_file(e['path']))
+        archive_exts = {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz', '.txz', '.rar', '.7z'}
+        archive_count = sum(1 for e in self.entries if not e['is_dir'] and 
+                          Path(e['path']).suffix.lower() in archive_exts)
+        
+        menu_items = [
+            ("1", f"Convert Audio to FLAC ({audio_count} files)", "convert_flac"),
+            ("2", f"Extract Archives ({archive_count} archives)", "extract"),
+            ("3", f"Extract & Convert ({archive_count} archives)", "extract_convert"),
+            ("4", "Fix Permissions (777 recursive)", "fix_perms"),
+        ]
+        
+        # Draw menu
+        menu_width = 45
+        menu_height = len(menu_items) + 4
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+        
+        # Draw box
+        self.stdscr.attron(curses.color_pair(7))
+        self.stdscr.addstr(start_y, start_x, "+" + "-" * (menu_width - 2) + "+")
+        self.stdscr.addstr(start_y + 1, start_x, "|" + " TOOLS MENU ".center(menu_width - 2) + "|")
+        self.stdscr.addstr(start_y + 2, start_x, "+" + "-" * (menu_width - 2) + "+")
+        self.stdscr.attroff(curses.color_pair(7))
+        
+        for i, (key, label, action) in enumerate(menu_items):
+            y = start_y + 3 + i
+            self.stdscr.addstr(y, start_x, "|", curses.color_pair(7))
+            self.stdscr.addstr(y, start_x + 2, f"[{key}] {label}"[:menu_width-4], curses.color_pair(11))
+            self.stdscr.addstr(y, start_x + menu_width - 1, "|", curses.color_pair(7))
+        
+        self.stdscr.attron(curses.color_pair(7))
+        self.stdscr.addstr(start_y + 3 + len(menu_items), start_x, "+" + "-" * (menu_width - 2) + "+")
+        self.stdscr.addstr(start_y + 4 + len(menu_items), start_x, "|" + " [q] Cancel ".center(menu_width - 2) + "|")
+        self.stdscr.addstr(start_y + 5 + len(menu_items), start_x, "+" + "-" * (menu_width - 2) + "+")
+        self.stdscr.attroff(curses.color_pair(7))
+        
+        self.stdscr.refresh()
+        
+        # Get selection
+        key = self.stdscr.getch()
+        
+        if key == ord('1'):
+            self.run_audio_to_flac()
+        elif key == ord('2'):
+            self.extract_archives()
+        elif key == ord('3'):
+            self.run_extract_and_convert()
+        elif key == ord('4'):
+            self.fix_permissions()
+    
+    def run_audio_to_flac(self):
+        """Run audio-to-flac converter in current directory"""
+        # Check if audio-to-flac is available
+        audio_to_flac_path = shutil.which('audio-to-flac')
+        if not audio_to_flac_path:
+            self.message = "audio-to-flac not found in PATH"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        # Count audio files
+        audio_count = sum(1 for e in self.entries if not e['is_dir'] and self.is_audio_file(e['path']))
+        
+        if audio_count == 0:
+            self.message = "No audio files found in current directory"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        # Exit curses temporarily to run the tool
+        curses.endwin()
+        
+        try:
+            # Change to current directory and run
+            original_dir = os.getcwd()
+            os.chdir(self.current_dir)
+            
+            print(f"\n{'='*70}")
+            print(f"Running audio-to-flac in: {self.current_dir}")
+            print(f"{'='*70}\n")
+            
+            subprocess.run(['audio-to-flac'], check=False)
+            
+            print(f"\n{'='*70}")
+            print("Press Enter to return to file manager...")
+            print(f"{'='*70}")
+            input()
+            
+            os.chdir(original_dir)
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            print("Press Enter to continue...")
+            input()
+        
+        # Restore curses
+        self.stdscr = curses.initscr()
+        curses.start_color()
+        curses.use_default_colors()
+        curses.noecho()
+        curses.cbreak()
+        curses.curs_set(0)
+        self.stdscr.keypad(True)
+        
+        # Reinitialize color pairs
+        curses.init_pair(1, curses.COLOR_CYAN, -1)
+        curses.init_pair(2, curses.COLOR_GREEN, -1)
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(5, curses.COLOR_RED, -1)
+        curses.init_pair(6, curses.COLOR_WHITE, -1)
+        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        curses.init_pair(8, curses.COLOR_GREEN, -1)
+        curses.init_pair(9, curses.COLOR_RED, -1)
+        curses.init_pair(10, curses.COLOR_YELLOW, -1)
+        curses.init_pair(11, curses.COLOR_BLUE, -1)
+        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+        
+        self.load_directory()
+        self.message = "Audio conversion complete"
+        self.message_color = curses.COLOR_GREEN
+    
+    def run_extract_and_convert(self):
+        """Run extract-and-convert in current directory"""
+        # Check if extract-and-convert is available
+        tool_path = shutil.which('extract-and-convert')
+        if not tool_path:
+            self.message = "extract-and-convert not found in PATH"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        # Count archives
+        archive_exts = {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz', '.txz', '.rar', '.7z'}
+        archive_count = sum(1 for e in self.entries if not e['is_dir'] and 
+                          Path(e['path']).suffix.lower() in archive_exts)
+        
+        if archive_count == 0:
+            self.message = "No archives found in current directory"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        # Exit curses temporarily to run the tool
+        curses.endwin()
+        
+        try:
+            # Change to current directory and run
+            original_dir = os.getcwd()
+            os.chdir(self.current_dir)
+            
+            print(f"\n{'='*70}")
+            print(f"Running extract-and-convert in: {self.current_dir}")
+            print(f"{'='*70}\n")
+            
+            subprocess.run(['extract-and-convert'], check=False)
+            
+            print(f"\n{'='*70}")
+            print("Press Enter to return to file manager...")
+            print(f"{'='*70}")
+            input()
+            
+            os.chdir(original_dir)
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            print("Press Enter to continue...")
+            input()
+        
+        # Restore curses
+        self.stdscr = curses.initscr()
+        curses.start_color()
+        curses.use_default_colors()
+        curses.noecho()
+        curses.cbreak()
+        curses.curs_set(0)
+        self.stdscr.keypad(True)
+        
+        # Reinitialize color pairs
+        curses.init_pair(1, curses.COLOR_CYAN, -1)
+        curses.init_pair(2, curses.COLOR_GREEN, -1)
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(5, curses.COLOR_RED, -1)
+        curses.init_pair(6, curses.COLOR_WHITE, -1)
+        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        curses.init_pair(8, curses.COLOR_GREEN, -1)
+        curses.init_pair(9, curses.COLOR_RED, -1)
+        curses.init_pair(10, curses.COLOR_YELLOW, -1)
+        curses.init_pair(11, curses.COLOR_BLUE, -1)
+        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+        
+        self.load_directory()
+        self.message = "Extract and convert complete"
+        self.message_color = curses.COLOR_GREEN
+
     def run(self):
         """Main loop"""
         while self.running:
@@ -1714,6 +1912,10 @@ class FileManager:
             elif key == ord('o'):
                 # Show operations menu
                 self.show_operations_menu()
+            
+            elif key == ord('t'):
+                # Show tools menu
+                self.show_tools_menu()
 
 
 class AudioInspector:

@@ -134,6 +134,28 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 - Automatically sets 777 permissions on extracted files
 - Visual progress and confirmation
 
+#### 🎵 Audio to FLAC Converter
+- **Intelligent audio conversion** to FLAC format
+- **Codec detection** - Distinguishes lossless vs lossy sources
+- **Quality preservation** - Warns when converting lossy sources
+- **Configurable compression** (0-8 levels)
+- **Metadata preservation** - Artist, album, title, etc.
+- **Artwork embedding** - Preserves album covers
+- **Optional cleanup** - Delete originals after conversion
+- **Output options** - Same directory or FLAC subdirectory
+- **Standalone or integrated** - Run from command line or file manager
+
+#### 📦➡️🎵 Extract and Convert
+- **Combined workflow** - Extract archives AND convert audio in one step
+- **Perfect for music archives** - Download, extract, convert to FLAC
+- **Automatic folder detection** - Finds newly extracted directories
+- **Batch processing** - Handles multiple archives at once
+- **Cleanup options**:
+  - `--delete-audio` - Delete original audio after conversion
+  - `--delete-archive` - Delete archives after extraction
+  - `--delete-all` - Delete both (same as `-d -a`)
+- **Standalone or integrated** - Run from command line or file manager
+
 #### 🔍 Empty Folder Analyzer
 - Find **empty folders** (no files at any level)
 - Identify **near-empty folders** (<10MB)
@@ -156,7 +178,7 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 - Terminal with **color support**
 - **ffmpeg/ffprobe** (for audio quality inspection) - Install with: `sudo apt install ffmpeg`
 
-**Note:** The required `extractfile` and `fixperms` utilities are included in this repository and will be installed along with the file manager.
+**Note:** All utilities are included in this repository and will be installed along with the file manager.
 
 ## 🚀 Installation
 
@@ -168,9 +190,9 @@ cd /path/to/your/projects
 git clone https://github.com/WB2024/WBs-Beautiful-TUI-Filemanager.git
 cd WBs-Beautiful-TUI-Filemanager
 
-# 2. Copy all three utilities to system path
-sudo cp filemanager extractfile fixperms /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms
+# 2. Copy all utilities to system path
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert
 
 # 3. Run it!
 filemanager
@@ -178,22 +200,26 @@ filemanager
 
 **What gets installed:**
 - `filemanager` - The main TUI file manager
-- `extractfile` - Archive extraction utility (used by the file manager)
-- `fixperms` - Standalone permission fixing tool (sets 777 recursively)
+- `extractfile` - Archive extraction utility
+- `fixperms` - Permission fixing tool (sets 777 recursively)
+- `audio-to-flac` - Audio conversion utility (any format to FLAC)
+- `extract-and-convert` - Combined extract archives + convert audio workflow
 
 ### Manual Installation
 
 ```bash
-# 1. Download all three scripts
+# 1. Download all scripts
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/filemanager
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/extractfile
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/fixperms
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/audio-to-flac
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/extract-and-convert
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert
 
 # 3. Move to PATH
-sudo mv filemanager extractfile fixperms /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert /usr/local/bin/
 
 # 4. Run from anywhere
 filemanager
@@ -203,12 +229,14 @@ filemanager
 
 ```bash
 # Check if all utilities are installed correctly
-which filemanager extractfile fixperms
+which filemanager extractfile fixperms audio-to-flac extract-and-convert
 
 # Should output:
 # /usr/local/bin/filemanager
 # /usr/local/bin/extractfile
 # /usr/local/bin/fixperms
+# /usr/local/bin/audio-to-flac
+# /usr/local/bin/extract-and-convert
 ```
 ## 🔄 Updating
 
@@ -224,8 +252,8 @@ cd /path/to/your/WBs-Beautiful-TUI-Filemanager
 git pull origin main
 
 # 3. Copy updated files to system path (replace old versions)
-sudo cp filemanager extractfile fixperms /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert
 
 # 4. Verify the update
 filemanager
@@ -340,6 +368,7 @@ Quit:             q
 | `n` | Create new file or folder |
 | `R` | Rename current file or folder |
 | `o` | Open file operations menu |
+| `t` | Open tools menu (FLAC converter, extract & convert) |
 | `b` | Open bookmarks menu |
 | `p` | Fix permissions (777 recursive) |
 | `e` | Extract archives |
@@ -649,6 +678,82 @@ MP4, MKV, AVI, MOV, WMV, FLV, WebM, M4V, MPG, MPEG, 3GP, OGV, TS, M2TS, VOB, Div
 - `.zip`, `.tar`, `.tar.gz`, `.tgz`
 - `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`
 - `.gz`, `.bz2`, `.xz`, `.rar`, `.7z`
+
+### Audio to FLAC Converter
+
+**From the file manager:**
+1. Navigate to a folder containing audio files
+2. Press `t` to open Tools menu
+3. Select "Convert Audio to FLAC"
+4. Follow interactive prompts
+
+**From command line:**
+```bash
+# Navigate to folder with audio files
+cd /path/to/audio/files
+
+# Run interactively
+audio-to-flac
+```
+
+**Features:**
+- Scans current directory for audio files
+- Analyzes each file with ffprobe (codec, sample rate, bit depth)
+- Distinguishes **lossless** vs **lossy** sources
+- Warns that converting lossy→FLAC won't improve quality (only increases file size)
+- Interactive prompts for:
+  - **Compression level** (0-8, default 8 for smallest files)
+  - **Metadata preservation** (artist, album, title, etc.)
+  - **Artwork preservation** (embedded album covers)
+  - **Delete originals** (optional cleanup)
+  - **Output directory** (same folder or FLAC subdirectory)
+- Sets 777 permissions on output files
+
+**Supported input formats:**
+M4A, MP3, WAV, AAC, OGG, Opus, WMA, APE, ALAC, AIFF, FLAC (skipped), MKA, MP2, AC3, DTS, TTA, WV, MPC
+
+### Extract and Convert
+
+**From the file manager:**
+1. Navigate to a folder containing archives with audio files
+2. Press `t` to open Tools menu
+3. Select "Extract & Convert"
+4. The tool extracts archives, then converts audio in each extracted folder
+
+**From command line:**
+```bash
+# Extract all archives and convert audio (interactive)
+extract-and-convert
+
+# Extract specific archive
+extract-and-convert album.zip
+
+# Delete original audio files after conversion
+extract-and-convert --delete-audio
+extract-and-convert -d album.zip
+
+# Delete archive after extraction
+extract-and-convert --delete-archive
+extract-and-convert -a album.zip
+
+# Delete both archives and original audio
+extract-and-convert --delete-all
+extract-and-convert -da album.zip
+
+# Quiet mode (less output)
+extract-and-convert -q
+```
+
+**Workflow:**
+1. **Extract** - Uses `extractfile` to extract archives
+2. **Detect** - Finds newly created directories
+3. **Convert** - Runs `audio-to-flac` in each directory
+4. **Cleanup** - Optionally deletes archives and/or original audio
+
+**Use cases:**
+- Download music archives → extract → convert to FLAC
+- Batch process multiple album downloads
+- Automated music library management
 
 ## 🎨 Color Scheme
 

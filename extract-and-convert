@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""
+Extract and Convert - Extract archives and convert audio to FLAC in one command
+Combines extractfile and audio-to-flac functionality
+"""
+
+import os
+import sys
+import subprocess
+import argparse
+from pathlib import Path
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+
+
+class ExtractAndConvert:
+    def __init__(self, delete_originals=False, delete_archive=False, verbose=True):
+        self.delete_originals = delete_originals
+        self.delete_archive = delete_archive
+        self.verbose = verbose
+        self.extracted_dirs = []
+        
+    def log(self, message, color=Colors.ENDC):
+        """Print message if verbose mode is on"""
+        if self.verbose:
+            print(f"{color}{message}{Colors.ENDC}")
+    
+    def run_command(self, command, description=""):
+        """Run a command and handle errors"""
+        if description and self.verbose:
+            self.log(f"\n{Colors.BOLD}{'='*70}{Colors.ENDC}")
+            self.log(f"{Colors.BOLD}{description}{Colors.ENDC}")
+            self.log(f"{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
+        
+        try:
+            result = subprocess.run(command, shell=True, check=False)
+            return result.returncode == 0
+        except Exception as e:
+            self.log(f"❌ Error running command: {e}", Colors.FAIL)
+            return False
+    
+    def find_audio_files(self, directory):
+        """Find audio files in a directory"""
+        audio_extensions = [
+            '.m4a', '.mp3', '.wav', '.aac', '.ogg', '.opus',
+            '.wma', '.ape', '.alac', '.aiff', '.mka', '.flac'
+        ]
+        
+        audio_files = []
+        for ext in audio_extensions:
+            audio_files.extend(list(Path(directory).glob(f"*{ext}")))
+        
+        return audio_files
+    
+    def extract_archives(self, archives):
+        """Extract archives using extractfile and track output directories"""
+        self.log(f"\n{Colors.HEADER}{Colors.BOLD}STEP 1: EXTRACTING ARCHIVES{Colors.ENDC}")
+        
+        # Get list of directories before extraction
+        before_dirs = set(d.name for d in Path.cwd().iterdir() if d.is_dir())
+        
+        if archives:
+            # Extract specific archives
+            archive_list = ' '.join(f'"{a}"' for a in archives)
+            success = self.run_command(
+                f'extractfile {archive_list}',
+                f"Extracting {len(archives)} archive(s)"
+            )
+        else:
+            # Extract all archives in current directory
+            success = self.run_command(
+                'extractfile',
+                "Extracting all archives in current directory"
+            )
+        
+        if not success:
+            self.log("❌ Extraction failed or no archives found", Colors.FAIL)
+            return False
+        
+        # Get list of directories after extraction
+        after_dirs = set(d.name for d in Path.cwd().iterdir() if d.is_dir())
+        
+        # Find newly created directories
+        self.extracted_dirs = list(after_dirs - before_dirs)
+        
+        if not self.extracted_dirs:
+            self.log("⚠️  No new directories created (archives may be empty or failed)", Colors.WARNING)
+            return False
+        
+        self.log(f"\n✅ Extracted to {len(self.extracted_dirs)} folder(s):", Colors.OKGREEN)
+        for d in self.extracted_dirs:
+            self.log(f"  • {d}", Colors.OKGREEN)
+        
+        return True
+    
+    def convert_audio_in_directory(self, directory):
+        """Convert audio files in a directory using audio-to-flac"""
+        original_dir = os.getcwd()
+        
+        try:
+            os.chdir(directory)
+            
+            # Check if there are audio files
+            audio_files = self.find_audio_files('.')
+            
+            if not audio_files:
+                self.log(f"  ℹ️  No audio files found in {directory}", Colors.OKCYAN)
+                return True
+            
+            self.log(f"  📁 Found {len(audio_files)} audio file(s) in {directory}", Colors.OKCYAN)
+            
+            # Run audio-to-flac
+            success = self.run_command(
+                'audio-to-flac',
+                f"Converting audio files in: {directory}"
+            )
+            
+            if not success:
+                self.log(f"  ❌ Conversion failed in {directory}", Colors.FAIL)
+                return False
+            
+            # Delete original audio files if requested
+            if self.delete_originals:
+                self.log(f"\n  🗑️  Deleting original audio files in {directory}...", Colors.WARNING)
+                for audio_file in audio_files:
+                    try:
+                        # Only delete non-FLAC files
+                        if audio_file.suffix.lower() != '.flac':
+                            audio_file.unlink()
+                            self.log(f"    Deleted: {audio_file.name}", Colors.WARNING)
+                    except Exception as e:
+                        self.log(f"    ⚠️  Could not delete {audio_file.name}: {e}", Colors.WARNING)
+            
+            return True
+            
+        finally:
+            os.chdir(original_dir)
+    
+    def cleanup_archives(self, archives):
+        """Delete archive files after successful extraction"""
+        if not self.delete_archive:
+            return
+        
+        self.log(f"\n{Colors.WARNING}{Colors.BOLD}STEP 4: CLEANING UP ARCHIVES{Colors.ENDC}")
+        
+        if archives:
+            # Delete specific archives
+            for archive in archives:
+                archive_path = Path(archive)
+                if archive_path.exists():
+                    try:
+                        archive_path.unlink()
+                        self.log(f"  🗑️  Deleted: {archive}", Colors.WARNING)
+                    except Exception as e:
+                        self.log(f"  ⚠️  Could not delete {archive}: {e}", Colors.WARNING)
+        else:
+            # Find and delete all archives in current directory
+            archive_extensions = ['.zip', '.tar', '.tar.gz', '.tgz', '.rar', '.7z', '.tar.bz2', '.tar.xz']
+            for ext in archive_extensions:
+                for archive_path in Path.cwd().glob(f"*{ext}"):
+                    try:
+                        archive_path.unlink()
+                        self.log(f"  🗑️  Deleted: {archive_path.name}", Colors.WARNING)
+                    except Exception as e:
+                        self.log(f"  ⚠️  Could not delete {archive_path.name}: {e}", Colors.WARNING)
+    
+    def process(self, archives=None):
+        """Main processing workflow"""
+        self.log(f"\n{Colors.HEADER}{Colors.BOLD}{'='*70}", Colors.HEADER)
+        self.log(f"EXTRACT AND CONVERT", Colors.HEADER)
+        self.log(f"{'='*70}{Colors.ENDC}", Colors.HEADER)
+        
+        # Step 1: Extract archives
+        if not self.extract_archives(archives):
+            return False
+        
+        # Step 2: Convert audio in each extracted directory
+        self.log(f"\n{Colors.HEADER}{Colors.BOLD}STEP 2: CONVERTING AUDIO FILES{Colors.ENDC}")
+        
+        success_count = 0
+        for directory in self.extracted_dirs:
+            if self.convert_audio_in_directory(directory):
+                success_count += 1
+        
+        # Step 3: Summary
+        self.log(f"\n{Colors.HEADER}{Colors.BOLD}STEP 3: SUMMARY{Colors.ENDC}")
+        self.log(f"✅ Successfully processed {success_count}/{len(self.extracted_dirs)} folder(s)", Colors.OKGREEN)
+        
+        # Step 4: Cleanup archives
+        if self.delete_archive:
+            self.cleanup_archives(archives)
+        
+        # Final message
+        self.log(f"\n{Colors.OKGREEN}{Colors.BOLD}{'='*70}", Colors.OKGREEN)
+        self.log(f"ALL DONE! ✨", Colors.OKGREEN)
+        self.log(f"{'='*70}{Colors.ENDC}", Colors.OKGREEN)
+        
+        return True
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Extract archives and convert audio files to FLAC in one command',
+        epilog='Examples:\n'
+               '  extract-and-convert                          # Extract all archives and convert\n'
+               '  extract-and-convert archive.zip              # Extract specific archive\n'
+               '  extract-and-convert --delete-audio           # Delete original audio after conversion\n'
+               '  extract-and-convert --delete-all             # Delete archives and original audio\n'
+               '  extract-and-convert -da archive.zip          # Short form of --delete-all\n',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument(
+        'archives',
+        nargs='*',
+        help='Specific archive file(s) to process (processes all if not specified)'
+    )
+    
+    parser.add_argument(
+        '-d', '--delete-audio',
+        action='store_true',
+        help='Delete original audio files after conversion to FLAC'
+    )
+    
+    parser.add_argument(
+        '-a', '--delete-archive',
+        action='store_true',
+        help='Delete archive files after extraction'
+    )
+    
+    parser.add_argument(
+        '--delete-all',
+        action='store_true',
+        help='Delete both archives and original audio files (same as -d -a)'
+    )
+    
+    parser.add_argument(
+        '-q', '--quiet',
+        action='store_true',
+        help='Suppress output messages'
+    )
+    
+    args = parser.parse_args()
+    
+    # Handle --delete-all flag
+    if args.delete_all:
+        args.delete_audio = True
+        args.delete_archive = True
+    
+    # Create processor
+    processor = ExtractAndConvert(
+        delete_originals=args.delete_audio,
+        delete_archive=args.delete_archive,
+        verbose=not args.quiet
+    )
+    
+    # Process
+    try:
+        success = processor.process(args.archives if args.archives else None)
+        sys.exit(0 if success else 1)
+    except KeyboardInterrupt:
+        print(f"\n\n{Colors.WARNING}Operation cancelled by user{Colors.ENDC}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{Colors.FAIL}Unexpected error: {e}{Colors.ENDC}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
