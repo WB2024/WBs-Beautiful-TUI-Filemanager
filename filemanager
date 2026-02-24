@@ -1548,16 +1548,31 @@ class AudioInspector:
         
         # Temporarily return to file manager for selection
         curses.curs_set(0)
-        self.file_manager.message = "Select audio file to compare, press Enter (or q to cancel)"
-        self.file_manager.message_color = curses.COLOR_YELLOW
+        
+        # Create message showing the first file being compared
+        first_file_name = self.filepath.name
+        first_file_path = str(self.filepath.parent)
+        
+        # Truncate path if too long
+        height, width = self.stdscr.getmaxyx()
+        max_path_len = width - 60  # Leave room for the message text
+        if len(first_file_path) > max_path_len:
+            first_file_path = "..." + first_file_path[-(max_path_len-3):]
+        
+        comparison_msg = f"Comparing FROM: {first_file_name} ({first_file_path})"
         
         while True:
+            # Update message each iteration to show first file info
+            self.file_manager.message = f"{comparison_msg} | Select 2nd audio file (Enter) or q to cancel"
+            self.file_manager.message_color = curses.COLOR_YELLOW
+            
             self.file_manager.draw()
             key = self.stdscr.getch()
             
             if key == ord('q') or key == 27:  # q or ESC
                 self.message = "Comparison cancelled"
                 self.message_color = curses.COLOR_YELLOW
+                self.file_manager.message = ""  # Clear the comparison message
                 return
             
             elif key == curses.KEY_UP:
@@ -1581,9 +1596,11 @@ class AudioInspector:
                     self.show_comparison = True
                     self.message = "Comparison loaded!"
                     self.message_color = curses.COLOR_GREEN
+                    self.file_manager.message = ""  # Clear the comparison message
                     return
                 else:
-                    self.file_manager.message = "Please select an audio file"
+                    # Keep showing the comparison_msg but add error
+                    self.file_manager.message = f"{comparison_msg} | ERROR: Please select an audio file"
                     self.file_manager.message_color = curses.COLOR_RED
             
             elif key in [curses.KEY_BACKSPACE, 127, 8]:
