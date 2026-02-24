@@ -1,0 +1,1111 @@
+#!/usr/bin/env python3
+"""
+Interactive CLI File Manager with Arrow Key Navigation and Bookmarks
+Navigate directories, manage permissions, extract archives, and find empty folders
+"""
+
+import os
+import sys
+import stat
+import subprocess
+import shutil
+import curses
+import json
+from pathlib import Path
+from collections import defaultdict
+import mimetypes
+
+# Configuration file for bookmarks
+CONFIG_FILE = Path.home() / '.filemanager_config.json'
+
+
+class Config:
+    """Handle configuration and bookmarks"""
+    
+    def __init__(self):
+        self.bookmarks = {}
+        self.load()
+    
+    def load(self):
+        """Load configuration from file"""
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    data = json.load(f)
+                    self.bookmarks = data.get('bookmarks', {})
+            except:
+                self.bookmarks = {}
+    
+    def save(self):
+        """Save configuration to file"""
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump({'bookmarks': self.bookmarks}, f, indent=2)
+        except:
+            pass
+    
+    def add_bookmark(self, name, path):
+        """Add a bookmark"""
+        self.bookmarks[name] = str(path)
+        self.save()
+    
+    def remove_bookmark(self, name):
+        """Remove a bookmark"""
+        if name in self.bookmarks:
+            del self.bookmarks[name]
+            self.save()
+    
+    def get_bookmarks(self):
+        """Get all bookmarks"""
+        return self.bookmarks
+
+
+class FileManager:
+    def __init__(self, stdscr):
+        self.stdscr = stdscr
+        self.current_dir = Path.cwd()
+        self.selected_index = 0
+        self.scroll_offset = 0
+        self.running = True
+        self.entries = []
+        self.config = Config()
+        self.show_help = False
+        self.message = ""
+        self.message_color = curses.COLOR_GREEN
+        
+        # Initialize colors
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_CYAN, -1)      # Directories
+        curses.init_pair(2, curses.COLOR_GREEN, -1)     # Executables/Archives
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)    # Media files
+        curses.init_pair(4, curses.COLOR_MAGENTA, -1)   # Audio files
+        curses.init_pair(5, curses.COLOR_RED, -1)       # Video files
+        curses.init_pair(6, curses.COLOR_WHITE, -1)     # Regular files
+        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)  # Selection
+        curses.init_pair(8, curses.COLOR_GREEN, -1)     # Success messages
+        curses.init_pair(9, curses.COLOR_RED, -1)       # Error messages
+        curses.init_pair(10, curses.COLOR_YELLOW, -1)   # Warning messages
+        curses.init_pair(11, curses.COLOR_BLUE, -1)     # Info
+        
+        # Hide cursor
+        curses.curs_set(0)
+        
+        # Load directory
+        self.load_directory()
+    
+    def get_size_string(self, size_bytes):
+        """Convert bytes to human-readable format"""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:6.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:6.1f} PB"
+    
+    def get_permissions_string(self, path):
+        """Get permissions string for a file/directory"""
+        try:
+            st = path.stat()
+            mode = st.st_mode
+            return stat.filemode(mode)
+        except:
+            return "???????????"
+    
+    def get_file_type_category(self, path):
+        """Categorize file by type"""
+        if path.is_dir():
+            return "directory"
+        
+        ext = path.suffix.lower()
+        
+        # Audio
+        if ext in {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma', '.ape', '.alac'}:
+            return "audio"
+        
+        # Video
+        if ext in {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg'}:
+            return "video"
+        
+        # Images
+        if ext in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp', '.tiff', '.ico'}:
+            return "image"
+        
+        # Text/Documents
+        if ext in {'.txt', '.log', '.md', '.doc', '.docx', '.pdf', '.rtf', '.odt'}:
+            return "document"
+        
+        # Archives
+        if ext in {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz', '.txz', '.rar', '.7z'}:
+            return "archive"
+        
+        # Code
+        if ext in {'.py', '.js', '.java', '.c', '.cpp', '.h', '.cs', '.php', '.rb', '.go', '.rs'}:
+            return "code"
+        
+        # Data
+        if ext in {'.json', '.xml', '.yaml', '.yml', '.csv', '.sql', '.db', '.sqlite'}:
+            return "data"
+        
+        return "other"
+    
+    def get_file_color(self, entry):
+        """Get color pair for file type"""
+        if entry['is_dir']:
+            return curses.color_pair(1)  # Cyan for directories
+        
+        path = entry['path']
+        ext = path.suffix.lower()
+        
+        # Archives
+        if ext in {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz', '.txz', '.rar', '.7z'}:
+            return curses.color_pair(2)  # Green
+        
+        # Audio
+        if ext in {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma'}:
+            return curses.color_pair(4)  # Magenta
+        
+        # Video
+        if ext in {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'}:
+            return curses.color_pair(5)  # Red
+        
+        # Images
+        if ext in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp'}:
+            return curses.color_pair(3)  # Yellow
+        
+        return curses.color_pair(6)  # White for regular files
+    
+    def get_file_icon(self, entry):
+        """Get icon for file type"""
+        if entry['is_dir']:
+            return "📁"
+        
+        path = entry['path']
+        ext = path.suffix.lower()
+        
+        if ext in {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz', '.txz', '.rar', '.7z'}:
+            return "📦"
+        if ext in {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma'}:
+            return "🎵"
+        if ext in {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'}:
+            return "🎬"
+        if ext in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp'}:
+            return "🖼️"
+        if ext in {'.txt', '.log', '.md'}:
+            return "📝"
+        
+        return "📄"
+    
+    def analyze_directory_contents(self, path):
+        """Analyze directory contents - count files by type and get total size"""
+        file_types = defaultdict(int)
+        file_type_sizes = defaultdict(int)
+        total_files = 0
+        total_size = 0
+        
+        try:
+            for item in path.rglob('*'):
+                if item.is_file():
+                    total_files += 1
+                    try:
+                        size = item.stat().st_size
+                        total_size += size
+                        
+                        file_type = self.get_file_type_category(item)
+                        file_types[file_type] += 1
+                        file_type_sizes[file_type] += size
+                    except:
+                        pass
+        except:
+            pass
+        
+        return {
+            'total_files': total_files,
+            'total_size': total_size,
+            'file_types': dict(file_types),
+            'file_type_sizes': dict(file_type_sizes)
+        }
+    
+    def get_directory_file_list(self, path, max_depth=3):
+        """Get a hierarchical list of files in directory"""
+        files_by_type = defaultdict(list)
+        
+        try:
+            for item in path.rglob('*'):
+                if item.is_file():
+                    # Calculate relative path
+                    try:
+                        rel_path = item.relative_to(path)
+                        depth = len(rel_path.parts) - 1
+                        
+                        if depth <= max_depth:
+                            file_type = self.get_file_type_category(item)
+                            size = item.stat().st_size
+                            
+                            files_by_type[file_type].append({
+                                'name': item.name,
+                                'path': str(rel_path),
+                                'size': size
+                            })
+                    except:
+                        pass
+        except:
+            pass
+        
+        return dict(files_by_type)
+    
+    def load_directory(self):
+        """Load current directory contents"""
+        self.entries = []
+        
+        # Add parent directory entry if not at root
+        if self.current_dir != self.current_dir.parent:
+            self.entries.append({
+                'name': '..',
+                'path': self.current_dir.parent,
+                'is_dir': True,
+                'size': 0,
+                'perms': ''
+            })
+        
+        try:
+            items = list(self.current_dir.iterdir())
+            
+            # Separate and sort directories and files
+            dirs = sorted([e for e in items if e.is_dir()], key=lambda x: x.name.lower())
+            files = sorted([e for e in items if e.is_file()], key=lambda x: x.name.lower())
+            
+            # Add directories
+            for d in dirs:
+                self.entries.append({
+                    'name': d.name,
+                    'path': d,
+                    'is_dir': True,
+                    'size': 0,
+                    'perms': self.get_permissions_string(d)
+                })
+            
+            # Add files
+            for f in files:
+                try:
+                    size = f.stat().st_size
+                except:
+                    size = 0
+                
+                self.entries.append({
+                    'name': f.name,
+                    'path': f,
+                    'is_dir': False,
+                    'size': size,
+                    'perms': self.get_permissions_string(f)
+                })
+        
+        except PermissionError:
+            self.message = "Permission denied reading directory"
+            self.message_color = curses.COLOR_RED
+        
+        # Reset selection if out of bounds
+        if self.selected_index >= len(self.entries):
+            self.selected_index = max(0, len(self.entries) - 1)
+    
+    def draw_header(self):
+        """Draw header with current path"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Title bar
+        title = " 🗂️  INTERACTIVE FILE MANAGER 🗂️ "
+        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+        self.stdscr.addstr(0, 0, title.center(width)[:width])
+        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        
+        # Current path
+        path_str = f"📁 {self.current_dir}"
+        if len(path_str) > width - 2:
+            path_str = "📁 ..." + path_str[-(width-6):]
+        self.stdscr.addstr(1, 1, path_str[:width-2], curses.color_pair(11) | curses.A_BOLD)
+        
+        # Separator
+        self.stdscr.addstr(2, 0, "─" * width)
+    
+    def draw_footer(self):
+        """Draw footer with help"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Separator
+        self.stdscr.addstr(height - 4, 0, "─" * width)
+        
+        # Help text
+        if self.show_help:
+            help_lines = [
+                "↑/↓: Navigate  Enter: Open  Backspace: Go Up  h: Home  r: Root",
+                "p: Permissions  e: Extract  f: Find Empty  b: Bookmarks  q: Quit",
+                "Press ? to hide help"
+            ]
+        else:
+            help_lines = [
+                "Press ? for help"
+            ]
+        
+        for i, line in enumerate(help_lines):
+            if height - 3 + i < height:
+                self.stdscr.addstr(height - 3 + i, 1, line[:width-2], curses.color_pair(11))
+        
+        # Message
+        if self.message:
+            color = curses.color_pair(8) if self.message_color == curses.COLOR_GREEN else curses.color_pair(9)
+            msg = self.message[:width-2]
+            self.stdscr.addstr(height - 1, 1, msg, color | curses.A_BOLD)
+    
+    def draw_entries(self):
+        """Draw file/directory entries"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Calculate visible area
+        visible_start = 3
+        visible_end = height - 4
+        visible_count = visible_end - visible_start
+        
+        # Adjust scroll offset
+        if self.selected_index < self.scroll_offset:
+            self.scroll_offset = self.selected_index
+        elif self.selected_index >= self.scroll_offset + visible_count:
+            self.scroll_offset = self.selected_index - visible_count + 1
+        
+        # Draw entries
+        for i in range(visible_count):
+            entry_index = i + self.scroll_offset
+            
+            if entry_index >= len(self.entries):
+                break
+            
+            entry = self.entries[entry_index]
+            y_pos = visible_start + i
+            
+            # Determine if selected
+            is_selected = entry_index == self.selected_index
+            
+            # Build display string
+            icon = self.get_file_icon(entry)
+            name = entry['name']
+            
+            # Size string
+            if entry['is_dir']:
+                size_str = "    <DIR>"
+            else:
+                size_str = self.get_size_string(entry['size'])
+            
+            # Permissions
+            perms = entry['perms']
+            
+            # Calculate available width for name
+            prefix = f"{icon} "
+            suffix = f" {perms} {size_str}"
+            available_width = width - len(prefix) - len(suffix) - 4
+            
+            if len(name) > available_width:
+                name = name[:available_width-3] + "..."
+            
+            display = f"{prefix}{name:<{available_width}}{suffix}"
+            
+            # Draw with appropriate color
+            if is_selected:
+                self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+                self.stdscr.addstr(y_pos, 1, display[:width-2])
+                self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            else:
+                color = self.get_file_color(entry)
+                self.stdscr.addstr(y_pos, 1, display[:width-2], color)
+        
+        # Draw scrollbar if needed
+        if len(self.entries) > visible_count:
+            scrollbar_height = visible_count
+            scrollbar_pos = int((self.scroll_offset / len(self.entries)) * scrollbar_height)
+            
+            for i in range(visible_count):
+                y_pos = visible_start + i
+                if i == scrollbar_pos:
+                    self.stdscr.addstr(y_pos, width - 1, "█", curses.color_pair(11))
+                else:
+                    self.stdscr.addstr(y_pos, width - 1, "│", curses.color_pair(11))
+    
+    def draw(self):
+        """Draw the entire interface"""
+        self.stdscr.clear()
+        self.draw_header()
+        self.draw_entries()
+        self.draw_footer()
+        self.stdscr.refresh()
+    
+    def change_directory(self, new_dir):
+        """Change to a new directory"""
+        try:
+            new_dir = new_dir.resolve()
+            if new_dir.exists() and new_dir.is_dir():
+                self.current_dir = new_dir
+                self.selected_index = 0
+                self.scroll_offset = 0
+                self.load_directory()
+                self.message = ""
+            else:
+                self.message = "Directory does not exist"
+                self.message_color = curses.COLOR_RED
+        except Exception as e:
+            self.message = f"Error: {e}"
+            self.message_color = curses.COLOR_RED
+    
+    def handle_enter(self):
+        """Handle Enter key - open directory or file"""
+        if not self.entries:
+            return
+        
+        entry = self.entries[self.selected_index]
+        
+        if entry['is_dir']:
+            self.change_directory(entry['path'])
+        else:
+            # For files, show info
+            self.message = f"File: {entry['name']} ({self.get_size_string(entry['size'])})"
+            self.message_color = curses.COLOR_GREEN
+    
+    def show_bookmarks_menu(self):
+        """Show bookmarks menu"""
+        bookmarks = self.config.get_bookmarks()
+        
+        menu_items = []
+        menu_items.append("Add current directory as bookmark")
+        
+        if bookmarks:
+            menu_items.append("─" * 40)
+            for name, path in bookmarks.items():
+                menu_items.append(f"{name}: {path}")
+            menu_items.append("─" * 40)
+            menu_items.append("Remove a bookmark")
+        
+        menu_items.append("Cancel")
+        
+        selected = 0
+        
+        while True:
+            self.stdscr.clear()
+            height, width = self.stdscr.getmaxyx()
+            
+            # Title
+            title = " BOOKMARKS "
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            
+            self.stdscr.addstr(2, 2, "Use ↑/↓ to navigate, Enter to select", curses.color_pair(11))
+            self.stdscr.addstr(3, 0, "─" * width)
+            
+            # Menu items
+            start_y = 4
+            for i, item in enumerate(menu_items):
+                if i + start_y >= height - 2:
+                    break
+                
+                if item.startswith("─"):
+                    self.stdscr.addstr(i + start_y, 2, item[:width-4])
+                elif i == selected:
+                    self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+                    self.stdscr.addstr(i + start_y, 2, f"► {item}"[:width-4])
+                    self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+                else:
+                    self.stdscr.addstr(i + start_y, 2, f"  {item}"[:width-4])
+            
+            self.stdscr.refresh()
+            
+            # Handle input
+            key = self.stdscr.getch()
+            
+            if key == curses.KEY_UP:
+                selected = max(0, selected - 1)
+                # Skip separator lines
+                while selected < len(menu_items) and menu_items[selected].startswith("─"):
+                    selected = max(0, selected - 1)
+            elif key == curses.KEY_DOWN:
+                selected = min(len(menu_items) - 1, selected + 1)
+                # Skip separator lines
+                while selected < len(menu_items) and menu_items[selected].startswith("─"):
+                    selected = min(len(menu_items) - 1, selected + 1)
+            elif key in [ord('\n'), curses.KEY_ENTER, 10, 13]:
+                selected_item = menu_items[selected]
+                
+                if selected_item == "Cancel":
+                    break
+                elif selected_item == "Add current directory as bookmark":
+                    name = self.get_text_input("Enter bookmark name: ")
+                    if name:
+                        self.config.add_bookmark(name, self.current_dir)
+                        self.message = f"Bookmark '{name}' added"
+                        self.message_color = curses.COLOR_GREEN
+                    break
+                elif selected_item == "Remove a bookmark":
+                    if bookmarks:
+                        name = self.get_text_input("Enter bookmark name to remove: ")
+                        if name and name in bookmarks:
+                            self.config.remove_bookmark(name)
+                            self.message = f"Bookmark '{name}' removed"
+                            self.message_color = curses.COLOR_GREEN
+                        elif name:
+                            self.message = f"Bookmark '{name}' not found"
+                            self.message_color = curses.COLOR_RED
+                    break
+                elif ": " in selected_item:
+                    # Navigate to bookmark
+                    name, path = selected_item.split(": ", 1)
+                    self.change_directory(Path(path))
+                    break
+            elif key == 27:  # ESC
+                break
+    
+    def get_text_input(self, prompt):
+        """Get text input from user"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Show input box
+        curses.curs_set(1)
+        curses.echo()
+        
+        self.stdscr.addstr(height - 2, 1, " " * (width - 2))
+        self.stdscr.addstr(height - 2, 1, prompt, curses.color_pair(11) | curses.A_BOLD)
+        self.stdscr.refresh()
+        
+        # Get input
+        input_str = self.stdscr.getstr(height - 2, 1 + len(prompt), width - len(prompt) - 3).decode('utf-8')
+        
+        curses.noecho()
+        curses.curs_set(0)
+        
+        return input_str.strip()
+    
+    def show_message_box(self, title, lines, wait_for_key=True):
+        """Show a message box"""
+        height, width = self.stdscr.getmaxyx()
+        
+        box_height = len(lines) + 4
+        box_width = min(width - 4, max(len(title) + 4, max(len(line) for line in lines) + 4))
+        
+        start_y = (height - box_height) // 2
+        start_x = (width - box_width) // 2
+        
+        # Draw box
+        self.stdscr.attron(curses.color_pair(7))
+        for i in range(box_height):
+            self.stdscr.addstr(start_y + i, start_x, " " * box_width)
+        self.stdscr.attroff(curses.color_pair(7))
+        
+        # Title
+        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+        self.stdscr.addstr(start_y, start_x + (box_width - len(title)) // 2, title)
+        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        
+        # Lines
+        for i, line in enumerate(lines):
+            self.stdscr.addstr(start_y + 2 + i, start_x + 2, line[:box_width-4])
+        
+        if wait_for_key:
+            self.stdscr.addstr(start_y + box_height - 1, start_x + 2, "Press any key to continue...", curses.A_BOLD)
+        
+        self.stdscr.refresh()
+        
+        if wait_for_key:
+            self.stdscr.getch()
+    
+    def inspect_folder(self, folder_info):
+        """Inspect folder contents in detail"""
+        path = folder_info['path']
+        
+        # Show loading message
+        self.stdscr.clear()
+        self.stdscr.addstr(0, 0, f"Inspecting {folder_info['name']}...", curses.color_pair(11) | curses.A_BOLD)
+        self.stdscr.refresh()
+        
+        # Analyze contents
+        analysis = self.analyze_directory_contents(path)
+        file_list = self.get_directory_file_list(path)
+        
+        scroll_offset = 0
+        
+        while True:
+            self.stdscr.clear()
+            height, width = self.stdscr.getmaxyx()
+            
+            # Title
+            title = f" INSPECTING: {folder_info['name']} "
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            
+            # Summary
+            current_y = 2
+            self.stdscr.addstr(current_y, 2, f"📁 Path: {path}", curses.color_pair(11) | curses.A_BOLD)
+            current_y += 1
+            self.stdscr.addstr(current_y, 2, f"📊 Total Size: {self.get_size_string(analysis['total_size'])}", curses.color_pair(8))
+            current_y += 1
+            self.stdscr.addstr(current_y, 2, f"📄 Total Files: {analysis['total_files']}", curses.color_pair(8))
+            current_y += 2
+            
+            # File type breakdown
+            self.stdscr.addstr(current_y, 2, "📋 FILE TYPE BREAKDOWN:", curses.color_pair(11) | curses.A_BOLD)
+            current_y += 1
+            self.stdscr.addstr(current_y, 0, "─" * width)
+            current_y += 1
+            
+            # Sort file types by size
+            file_types_sorted = sorted(
+                analysis['file_types'].items(),
+                key=lambda x: analysis['file_type_sizes'].get(x[0], 0),
+                reverse=True
+            )
+            
+            # Icons for file types
+            type_icons = {
+                'audio': '🎵',
+                'video': '🎬',
+                'image': '🖼️',
+                'document': '📝',
+                'archive': '📦',
+                'code': '💻',
+                'data': '📊',
+                'other': '📄'
+            }
+            
+            # Type colors
+            type_colors = {
+                'audio': curses.color_pair(4),
+                'video': curses.color_pair(5),
+                'image': curses.color_pair(3),
+                'archive': curses.color_pair(2),
+                'code': curses.color_pair(11),
+                'document': curses.color_pair(6),
+                'data': curses.color_pair(1),
+                'other': curses.color_pair(6)
+            }
+            
+            type_section_start = current_y
+            
+            for file_type, count in file_types_sorted:
+                if current_y >= height - 8:
+                    break
+                
+                size = analysis['file_type_sizes'].get(file_type, 0)
+                size_str = self.get_size_string(size)
+                icon = type_icons.get(file_type, '📄')
+                color = type_colors.get(file_type, curses.color_pair(6))
+                
+                # Display type summary
+                type_display = f"{icon} {file_type.upper()}"
+                count_display = f"{count} files"
+                
+                self.stdscr.addstr(current_y, 4, type_display, color | curses.A_BOLD)
+                self.stdscr.addstr(current_y, 25, count_display, color)
+                self.stdscr.addstr(current_y, 40, size_str, color)
+                current_y += 1
+            
+            # Separator
+            if current_y < height - 6:
+                current_y += 1
+                self.stdscr.addstr(current_y, 0, "─" * width)
+                current_y += 1
+                
+                # Sample files section
+                self.stdscr.addstr(current_y, 2, "📑 SAMPLE FILES (grouped by type):", curses.color_pair(11) | curses.A_BOLD)
+                current_y += 1
+                
+                sample_start_y = current_y
+                max_samples_per_type = 3
+                
+                # Show sample files
+                for file_type, count in file_types_sorted:
+                    if current_y >= height - 3:
+                        break
+                    
+                    if file_type in file_list and file_list[file_type]:
+                        icon = type_icons.get(file_type, '📄')
+                        color = type_colors.get(file_type, curses.color_pair(6))
+                        
+                        # Show up to max_samples_per_type files
+                        files = file_list[file_type][:max_samples_per_type]
+                        
+                        for file_info in files:
+                            if current_y >= height - 3:
+                                break
+                            
+                            file_display = f"  {icon} {file_info['path']}"
+                            if len(file_display) > width - 20:
+                                file_display = file_display[:width-23] + "..."
+                            
+                            size_str = self.get_size_string(file_info['size'])
+                            
+                            self.stdscr.addstr(current_y, 4, file_display[:width-20], color)
+                            self.stdscr.addstr(current_y, width - 15, size_str, curses.color_pair(6))
+                            current_y += 1
+                        
+                        # Show "and X more..." if there are more files
+                        remaining = len(file_list[file_type]) - max_samples_per_type
+                        if remaining > 0:
+                            self.stdscr.addstr(current_y, 6, f"... and {remaining} more {file_type} files", curses.color_pair(6) | curses.A_DIM)
+                            current_y += 1
+                        
+                        if current_y < height - 3:
+                            current_y += 1
+            
+            # Footer
+            self.stdscr.addstr(height - 2, 2, "Press any key to return", curses.color_pair(11))
+            
+            self.stdscr.refresh()
+            
+            # Wait for key
+            key = self.stdscr.getch()
+            break
+    
+    def fix_permissions(self):
+        """Fix permissions on current directory"""
+        lines = [
+            f"Directory: {self.current_dir}",
+            "",
+            "This will set permissions to 777 recursively.",
+            "Continue? (y/n)"
+        ]
+        
+        self.show_message_box("FIX PERMISSIONS", lines, wait_for_key=False)
+        
+        key = self.stdscr.getch()
+        
+        if key in [ord('y'), ord('Y')]:
+            try:
+                subprocess.run(['chmod', '-R', '777', str(self.current_dir)], check=True)
+                self.message = "Permissions updated successfully"
+                self.message_color = curses.COLOR_GREEN
+            except Exception as e:
+                self.message = f"Error: {e}"
+                self.message_color = curses.COLOR_RED
+        else:
+            self.message = "Cancelled"
+            self.message_color = curses.COLOR_YELLOW
+    
+    def extract_archives(self):
+        """Extract archives in current directory"""
+        # Find archives
+        archive_exts = {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz', '.txz', '.rar', '.7z'}
+        archives = []
+        
+        for entry in self.entries:
+            if not entry['is_dir']:
+                path = entry['path']
+                if path.name.lower().endswith(('.tar.gz', '.tar.bz2', '.tar.xz')) or path.suffix.lower() in archive_exts:
+                    archives.append(entry)
+        
+        if not archives:
+            self.show_message_box("EXTRACT ARCHIVES", ["No archive files found in current directory"])
+            return
+        
+        # Show selection menu
+        selected = 0
+        extract_all = False
+        
+        while True:
+            self.stdscr.clear()
+            height, width = self.stdscr.getmaxyx()
+            
+            # Title
+            title = " EXTRACT ARCHIVES "
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            
+            self.stdscr.addstr(2, 2, "Use ↑/↓ to navigate, Space to toggle, Enter to extract", curses.color_pair(11))
+            self.stdscr.addstr(3, 0, "─" * width)
+            
+            # Show archives
+            start_y = 4
+            self.stdscr.addstr(start_y, 2, "[ ] Extract All", curses.color_pair(11) | curses.A_BOLD)
+            if selected == 0:
+                self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+                self.stdscr.addstr(start_y, 2, "[X] Extract All" if extract_all else "[ ] Extract All")
+                self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            elif extract_all:
+                self.stdscr.addstr(start_y, 2, "[X] Extract All", curses.color_pair(2))
+            
+            for i, archive in enumerate(archives):
+                y = start_y + i + 2
+                if y >= height - 2:
+                    break
+                
+                name = archive['name']
+                size = self.get_size_string(archive['size'])
+                display = f"  {name} ({size})"
+                
+                if i + 1 == selected:
+                    self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+                    self.stdscr.addstr(y, 2, f"► {display}"[:width-4])
+                    self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+                else:
+                    self.stdscr.addstr(y, 2, f"  {display}"[:width-4])
+            
+            self.stdscr.addstr(height - 2, 2, "Press 'q' to cancel", curses.color_pair(11))
+            
+            self.stdscr.refresh()
+            
+            # Handle input
+            key = self.stdscr.getch()
+            
+            if key == curses.KEY_UP:
+                selected = max(0, selected - 1)
+            elif key == curses.KEY_DOWN:
+                selected = min(len(archives), selected + 1)
+            elif key == ord(' '):
+                if selected == 0:
+                    extract_all = not extract_all
+            elif key in [ord('\n'), curses.KEY_ENTER, 10, 13]:
+                # Extract
+                if extract_all:
+                    files_to_extract = archives
+                elif selected > 0:
+                    files_to_extract = [archives[selected - 1]]
+                else:
+                    files_to_extract = []
+                
+                if files_to_extract:
+                    self.stdscr.clear()
+                    self.stdscr.addstr(0, 0, "Extracting...", curses.color_pair(11) | curses.A_BOLD)
+                    self.stdscr.refresh()
+                    
+                    for archive in files_to_extract:
+                        try:
+                            subprocess.run(
+                                ['extractfile', archive['name']],
+                                cwd=str(self.current_dir),
+                                capture_output=True
+                            )
+                        except:
+                            pass
+                    
+                    self.load_directory()
+                    self.message = f"Extracted {len(files_to_extract)} archive(s)"
+                    self.message_color = curses.COLOR_GREEN
+                break
+            elif key == ord('q'):
+                break
+    
+    def find_empty_folders(self):
+        """Find empty and near-empty folders"""
+        self.stdscr.clear()
+        self.stdscr.addstr(0, 0, "Scanning for empty folders...", curses.color_pair(11) | curses.A_BOLD)
+        self.stdscr.refresh()
+        
+        empty = []
+        near_empty = []
+        non_empty = []
+        
+        # Scan directories
+        for entry in self.entries:
+            if entry['is_dir'] and entry['name'] != '..':
+                path = entry['path']
+                
+                # Analyze directory
+                analysis = self.analyze_directory_contents(path)
+                total_files = analysis['total_files']
+                total_size = analysis['total_size']
+                
+                folder_info = {
+                    'name': entry['name'],
+                    'path': path,
+                    'size': total_size,
+                    'file_count': total_files,
+                    'file_types': analysis['file_types'],
+                    'file_type_sizes': analysis['file_type_sizes']
+                }
+                
+                if total_files == 0:
+                    empty.append(folder_info)
+                elif total_size < 10 * 1024 * 1024:  # < 10MB
+                    near_empty.append(folder_info)
+                else:
+                    non_empty.append(folder_info)
+        
+        # Show results
+        all_folders = []
+        all_folders.extend(empty)
+        all_folders.extend(near_empty)
+        all_folders.extend(non_empty)
+        
+        if not all_folders:
+            self.show_message_box("FIND EMPTY FOLDERS", ["No subdirectories found"])
+            return
+        
+        selected = 0
+        
+        while True:
+            self.stdscr.clear()
+            height, width = self.stdscr.getmaxyx()
+            
+            # Title
+            title = " EMPTY FOLDER ANALYSIS "
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            
+            self.stdscr.addstr(2, 2, f"Empty: {len(empty)} | Near-empty: {len(near_empty)} | Non-empty: {len(non_empty)}", curses.color_pair(11))
+            self.stdscr.addstr(3, 0, "─" * width)
+            
+            # Show folders
+            start_y = 4
+            current_y = start_y
+            
+            for i, folder in enumerate(all_folders):
+                if current_y >= height - 3:
+                    break
+                
+                name = folder['name']
+                size_str = self.get_size_string(folder['size'])
+                
+                # Determine category
+                if folder in empty:
+                    category = "EMPTY"
+                    color = curses.color_pair(9)
+                    type_str = "(no files)"
+                elif folder in near_empty:
+                    category = "NEAR-EMPTY"
+                    color = curses.color_pair(10)
+                    # Build file types string
+                    types = []
+                    for ftype, count in folder['file_types'].items():
+                        types.append(f"{ftype}")
+                    type_str = ", ".join(types[:3]) if types else "unknown"
+                    if len(types) > 3:
+                        type_str += f" +{len(types)-3} more"
+                else:
+                    category = "NON-EMPTY"
+                    color = curses.color_pair(8)
+                    # Build file types string
+                    types = []
+                    for ftype, count in folder['file_types'].items():
+                        types.append(f"{ftype}")
+                    type_str = ", ".join(types[:3]) if types else "unknown"
+                    if len(types) > 3:
+                        type_str += f" +{len(types)-3} more"
+                
+                display = f"{name}/ [{category}] ({size_str}) - {type_str}"
+                
+                if i == selected:
+                    self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+                    self.stdscr.addstr(current_y, 2, f"► {display}"[:width-4])
+                    self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+                else:
+                    self.stdscr.addstr(current_y, 2, f"  {display}"[:width-4], color)
+                
+                current_y += 1
+            
+            self.stdscr.addstr(height - 2, 2, "↑/↓: Navigate | i: Inspect | d: Delete | q: Cancel", curses.color_pair(11))
+            
+            self.stdscr.refresh()
+            
+            # Handle input
+            key = self.stdscr.getch()
+            
+            if key == curses.KEY_UP:
+                selected = max(0, selected - 1)
+            elif key == curses.KEY_DOWN:
+                selected = min(len(all_folders) - 1, selected + 1)
+            elif key == ord('i'):
+                # Inspect selected folder
+                if 0 <= selected < len(all_folders):
+                    self.inspect_folder(all_folders[selected])
+            elif key == ord('d'):
+                # Delete selected
+                folder = all_folders[selected]
+                
+                confirm_lines = [
+                    f"Delete folder: {folder['name']}?",
+                    "",
+                    "Press 'y' to confirm, any other key to cancel"
+                ]
+                
+                self.show_message_box("CONFIRM DELETE", confirm_lines, wait_for_key=False)
+                confirm_key = self.stdscr.getch()
+                
+                if confirm_key in [ord('y'), ord('Y')]:
+                    try:
+                        shutil.rmtree(folder['path'])
+                        self.message = f"Deleted: {folder['name']}"
+                        self.message_color = curses.COLOR_GREEN
+                        self.load_directory()
+                    except Exception as e:
+                        self.message = f"Error: {e}"
+                        self.message_color = curses.COLOR_RED
+                break
+            elif key == ord('q'):
+                break
+    
+    def run(self):
+        """Main loop"""
+        while self.running:
+            self.draw()
+            
+            key = self.stdscr.getch()
+            
+            # Clear message on any key
+            if self.message:
+                self.message = ""
+            
+            if key == curses.KEY_UP:
+                self.selected_index = max(0, self.selected_index - 1)
+            
+            elif key == curses.KEY_DOWN:
+                self.selected_index = min(len(self.entries) - 1, self.selected_index + 1)
+            
+            elif key in [ord('\n'), curses.KEY_ENTER, 10, 13]:
+                self.handle_enter()
+            
+            elif key in [curses.KEY_BACKSPACE, 127, 8]:
+                # Go up one directory
+                if self.current_dir != self.current_dir.parent:
+                    self.change_directory(self.current_dir.parent)
+            
+            elif key == ord('h'):
+                # Go to home
+                self.change_directory(Path.home())
+            
+            elif key == ord('r'):
+                # Go to root
+                self.change_directory(Path("/"))
+            
+            elif key == ord('?'):
+                # Toggle help
+                self.show_help = not self.show_help
+            
+            elif key == ord('q'):
+                # Quit
+                self.running = False
+            
+            elif key == ord('b'):
+                # Bookmarks
+                self.show_bookmarks_menu()
+            
+            elif key == ord('p'):
+                # Fix permissions
+                self.fix_permissions()
+            
+            elif key == ord('e'):
+                # Extract archives
+                self.extract_archives()
+            
+            elif key == ord('f'):
+                # Find empty folders
+                self.find_empty_folders()
+
+
+def main(stdscr):
+    """Entry point for curses"""
+    fm = FileManager(stdscr)
+    fm.run()
+
+
+if __name__ == '__main__':
+    try:
+        curses.wrapper(main)
+    except KeyboardInterrupt:
+        pass
+    
+    print("\n👋 Goodbye!\n")
