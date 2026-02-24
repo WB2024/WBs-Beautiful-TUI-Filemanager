@@ -1,6 +1,6 @@
 # 🗂️ Terminal File Manager
 
-A beautiful, interactive terminal-based file manager with a built-in text editor and powerful tools for Linux/Unix systems. Navigate your filesystem with arrow keys, edit files with syntax highlighting, manage permissions, extract archives, and analyze disk usage - all from a gorgeous TUI (Terminal User Interface).
+A beautiful, interactive terminal-based file manager with a built-in text editor, audio quality inspector, and powerful tools for Linux/Unix systems. Navigate your filesystem with arrow keys, edit files with syntax highlighting, inspect audio quality, compare audio files, manage permissions, extract archives, and analyze disk usage - all from a gorgeous TUI (Terminal User Interface).
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/succinctrecords)
 
@@ -33,6 +33,30 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 - **Auto-detection** of text files (supports 50+ file extensions)
 - **Home/End** keys for line navigation
 - **Tab support** (4 spaces)
+
+### 🎵 Audio Quality Inspector
+- **Professional audio analysis** using ffprobe
+- **Press Enter on audio files** to inspect quality
+- **Comprehensive metrics**:
+  - File size and duration
+  - Format and codec information
+  - Sample rate (Hz)
+  - Bitrate (kbps)
+  - Bit depth
+  - Channels (stereo/mono)
+  - Quality score (0-100)
+- **Quality indicators**:
+  - Color-coded ratings (Exceptional, Excellent, Very Good, Good, Fair, Poor)
+  - Lossless format detection (FLAC, ALAC, WAV, APE)
+  - High-resolution audio highlighting
+- **File comparison mode**:
+  - Compare two audio files side-by-side
+  - Quality score comparison
+  - Clear winner indication
+  - Recommendation on which file to keep
+  - Perfect for finding the best version of duplicate songs
+- **Supported formats**: MP3, FLAC, WAV, M4A, AAC, OGG, Opus, WMA, APE, ALAC, AIFF, DSD
+- **Easy navigation**: Browse to second file without leaving inspector
 
 ### 🔖 Bookmark System
 - **Save favorite directories** with custom names
@@ -77,6 +101,7 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 - **Python 3.6+**
 - **Linux/Unix** system (tested on Debian/Ubuntu)
 - Terminal with **color support**
+- **ffmpeg/ffprobe** (for audio quality inspection) - Install with: `sudo apt install ffmpeg`
 
 **Note:** The required `extractfile` and `fixperms` utilities are included in this repository and will be installed along with the file manager.
 
@@ -177,11 +202,12 @@ filemanager
 This package includes three powerful command-line tools:
 
 ### 1. `filemanager` - Interactive TUI File Manager
-The main application providing a beautiful terminal-based file browser with built-in text editor and tools for navigation, bookmarks, archive extraction, and folder analysis.
+The main application providing a beautiful terminal-based file browser with built-in text editor, audio quality inspector, and tools for navigation, bookmarks, archive extraction, and folder analysis.
 
 **Key Features:**
 - Color-coded file browser with icons
 - Built-in text editor with syntax highlighting
+- Audio quality inspector with comparison mode
 - Bookmark system for quick directory access
 - Archive extraction tool
 - Empty folder analyzer
@@ -233,7 +259,8 @@ Launch:           filemanager
 Navigate:         ↑/↓ arrow keys
 Open folder:      Enter
 Edit text file:   Enter (on text files)
-View file info:   Enter (on non-text files)
+Inspect audio:    Enter (on audio files)
+View file info:   Enter (on other files)
 Go up:            Backspace or select ".."
 Go to home:       h
 Go to root:       r
@@ -246,7 +273,7 @@ Quit:             q
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` | Navigate up/down through files |
-| `Enter` | Open directory or edit text file |
+| `Enter` | Open directory / Edit text file / Inspect audio file |
 | `Backspace` | Go to parent directory |
 | `h` | Jump to home directory |
 | `r` | Jump to root directory (/) |
@@ -277,6 +304,19 @@ When editing a text file:
 | `Backspace` | Delete character before cursor |
 | `Delete` | Delete character at cursor |
 | `Enter` | New line |
+
+### Audio Inspector Controls
+
+When inspecting an audio file:
+
+| Key | Action |
+|-----|--------|
+| `c` | Start/Clear comparison mode |
+| `q` | Exit inspector (or return to single view from comparison) |
+| `ESC` | Exit inspector (or return to single view from comparison) |
+| `↑` / `↓` | Navigate files (in comparison browse mode) |
+| `Enter` | Select file for comparison (in comparison browse mode) |
+| `Backspace` | Go up directory (in comparison browse mode) |
 
 ### Bookmarks
 
@@ -338,6 +378,65 @@ When editing a text file:
 - The editor handles large files efficiently
 - Syntax highlighting adapts to file extension
 - UTF-8 encoding is used for all file operations
+
+### Audio Quality Inspector
+
+**Opening the inspector:**
+- Navigate to any audio file (MP3, FLAC, WAV, M4A, AAC, OGG, Opus, WMA, etc.)
+- Press **Enter** to launch the Audio Quality Inspector
+- Instant professional-grade analysis using ffprobe
+
+**Quality metrics displayed:**
+- **Quality Score** (0-100) with color-coded rating:
+  - 90-100: Exceptional (Green)
+  - 75-89: Excellent (Green)
+  - 60-74: Very Good (Blue)
+  - 45-59: Good (Yellow)
+  - 30-44: Fair (Yellow)
+  - 0-29: Poor (Red)
+- **File Size**: Total file size in MB/GB
+- **Duration**: Track length in MM:SS format
+- **Format**: Container format (MP3, FLAC, etc.)
+- **Codec**: Audio codec with lossless detection
+- **Sample Rate**: Frequency in Hz (higher is better)
+  - 192000 Hz: Hi-Res audio
+  - 96000 Hz: Studio quality
+  - 48000 Hz / 44100 Hz: CD quality
+- **Bitrate**: Data rate in kbps (higher is better)
+  - 1411+ kbps: Lossless
+  - 320 kbps: High quality MP3
+  - 256-192 kbps: Good quality
+  - 128 kbps: Standard quality
+- **Bit Depth**: Resolution in bits (16-bit, 24-bit, etc.)
+- **Channels**: Stereo, Mono, or surround configuration
+
+**Comparing two audio files:**
+1. Open the first audio file (press Enter)
+2. In the inspector, press **c** to start comparison
+3. Navigate to the second audio file using arrow keys
+4. Press **Enter** to select the comparison file
+5. View side-by-side comparison with:
+   - All metrics displayed for both files
+   - Quality scores compared
+   - Clear winner indication with recommendation
+   - Score difference highlighted
+
+**Comparison use cases:**
+- **Duplicate songs**: Find which version has better quality
+- **Format comparison**: Compare lossy vs lossless versions
+- **Download verification**: Ensure you got the best quality version
+- **Library cleanup**: Identify and remove lower-quality duplicates
+
+**Controls:**
+- **q** or **ESC**: Exit inspector (or return to single view from comparison)
+- **c**: Start comparison mode / Clear comparison
+- Navigate normally in comparison browse mode
+
+**Tips:**
+- Lossless formats (FLAC, ALAC, WAV, APE) automatically get higher scores
+- Green-colored metrics indicate high-quality values
+- The quality score combines sample rate, bitrate, bit depth, and codec
+- Perfect for deciding which duplicate file to keep!
 
 ### Empty Folder Analysis
 
