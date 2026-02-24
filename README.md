@@ -1,6 +1,6 @@
 # 🗂️ Terminal File Manager
 
-A beautiful, interactive terminal-based file manager with built-in tools for Linux/Unix systems. Navigate your filesystem with arrow keys, edit text files, manage permissions, extract archives, and analyze disk usage - all from a gorgeous TUI (Terminal User Interface).
+A beautiful, interactive terminal-based file manager with a built-in text editor and powerful tools for Linux/Unix systems. Navigate your filesystem with arrow keys, edit files with syntax highlighting, manage permissions, extract archives, and analyze disk usage - all from a gorgeous TUI (Terminal User Interface).
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/succinctrecords)
 
@@ -16,7 +16,25 @@ A beautiful, interactive terminal-based file manager with built-in tools for Lin
 - **Quick jumps** - Instantly jump to home, root, or bookmarked locations
 - **File information** - Press Enter on files to view name and size
 
-###  Bookmark System
+### 📝 Built-in Text Editor
+- **Syntax highlighting** for Python, JSON, and more
+- **Line numbers** with current line highlighting
+- **Cursor position tracking** (line/column display)
+- **Full editing capabilities** - Insert, delete, newlines, navigation
+- **Save functionality** with modification tracking (Ctrl+S)
+- **Smart quit** - Warns if unsaved changes (Ctrl+Q)
+- **Force quit** without saving (Ctrl+X)
+- **Page Up/Down** support for large files
+- **Advanced features**:
+  - **Select All** (Ctrl+A) - Copy entire file to clipboard
+  - **Copy Line** (Ctrl+C) - Copy current line
+  - **Paste** (Ctrl+V) - Paste from clipboard
+  - **Delete All** (Ctrl+D) - Clear entire file
+- **Auto-detection** of text files (supports 50+ file extensions)
+- **Home/End** keys for line navigation
+- **Tab support** (4 spaces)
+
+### 🔖 Bookmark System
 - **Save favorite directories** with custom names
 - **Quick access** to frequently used locations
 - **Persistent storage** - Bookmarks saved to `~/.filemanager_config.json`
@@ -120,7 +138,15 @@ which filemanager extractfile fixperms
 This package includes three powerful command-line tools:
 
 ### 1. `filemanager` - Interactive TUI File Manager
-The main application providing a beautiful terminal-based file browser with built-in tools for navigation, bookmarks, archive extraction, and folder analysis.
+The main application providing a beautiful terminal-based file browser with built-in text editor and tools for navigation, bookmarks, archive extraction, and folder analysis.
+
+**Key Features:**
+- Color-coded file browser with icons
+- Built-in text editor with syntax highlighting
+- Bookmark system for quick directory access
+- Archive extraction tool
+- Empty folder analyzer
+- Permission management
 
 ### 2. `extractfile` - Universal Archive Extractor
 A standalone utility for extracting various archive formats. Can be used independently or is automatically called by the file manager.
@@ -167,7 +193,8 @@ sudo fixperms                        # Run with sudo for ownership changes
 Launch:           filemanager
 Navigate:         ↑/↓ arrow keys
 Open folder:      Enter
-View file info:   Enter (on files)
+Edit text file:   Enter (on text files)
+View file info:   Enter (on non-text files)
 Go up:            Backspace or select ".."
 Go to home:       h
 Go to root:       r
@@ -180,7 +207,7 @@ Quit:             q
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` | Navigate up/down through files |
-| `Enter` | Open directory or view file info |
+| `Enter` | Open directory or edit text file |
 | `Backspace` | Go to parent directory |
 | `h` | Jump to home directory |
 | `r` | Jump to root directory (/) |
@@ -190,6 +217,27 @@ Quit:             q
 | `f` | Find empty/near-empty folders |
 | `?` | Toggle help display |
 | `q` | Quit file manager |
+
+### Text Editor Controls
+
+When editing a text file:
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+S` | Save file |
+| `Ctrl+Q` | Quit editor (warns if unsaved) |
+| `Ctrl+X` | Force quit without saving |
+| `Ctrl+A` | Select all text (copy to clipboard) |
+| `Ctrl+C` | Copy current line |
+| `Ctrl+V` | Paste from clipboard |
+| `Ctrl+D` | Delete all text |
+| `↑` / `↓` / `←` / `→` | Navigate cursor |
+| `Page Up` / `Page Down` | Scroll by page |
+| `Home` / `End` | Jump to line start/end |
+| `Tab` | Insert 4 spaces |
+| `Backspace` | Delete character before cursor |
+| `Delete` | Delete character at cursor |
+| `Enter` | New line |
 
 ### Bookmarks
 
@@ -208,6 +256,49 @@ Quit:             q
 1. Press `b`
 2. Select "Remove a bookmark"
 3. Enter the bookmark name
+
+### Text Editor
+
+**Opening files:**
+- The text editor automatically opens when you press Enter on any supported text file
+- Supports 50+ file extensions including:
+  - **Programming**: `.py`, `.js`, `.java`, `.c`, `.cpp`, `.go`, `.rs`, `.php`, `.rb`, etc.
+  - **Web**: `.html`, `.css`, `.json`, `.xml`, `.yaml`, `.yml`
+  - **Scripts**: `.sh`, `.bash`, `.ps1`, `.bat`
+  - **Documents**: `.txt`, `.md`, `.log`, `.csv`, `.ini`, `.cfg`
+  - And many more!
+
+**Editing features:**
+- **Line numbers** displayed on the left with current line highlighted
+- **Syntax highlighting** for Python, JSON, and other formats
+- **Cursor position** shown in header (Line X/Y Col Z)
+- **Modification indicator** shows [Modified] when file has unsaved changes
+- **Smart scrolling** - Both horizontal and vertical scrolling for large files
+
+**Clipboard operations:**
+- **Ctrl+A**: Copy entire file to internal clipboard
+- **Ctrl+C**: Copy current line to clipboard
+- **Ctrl+V**: Paste clipboard contents at cursor
+  - Single-line paste inserts at cursor position
+  - Multi-line paste inserts lines starting at cursor
+
+**File operations:**
+- **Ctrl+S**: Save file (shows success message)
+- **Ctrl+Q**: Quit editor (warns if unsaved changes exist)
+- **Ctrl+X**: Force quit without saving (no confirmation)
+- **Ctrl+D**: Delete all text in file (leaves one empty line)
+
+**Navigation:**
+- Arrow keys move cursor character by character
+- **Page Up/Down** scroll by full pages
+- **Home/End** jump to start/end of current line
+- Cursor automatically scrolls viewport when moving off-screen
+
+**Tips:**
+- Tab key inserts 4 spaces (configurable in code)
+- The editor handles large files efficiently
+- Syntax highlighting adapts to file extension
+- UTF-8 encoding is used for all file operations
 
 ### Empty Folder Analysis
 
