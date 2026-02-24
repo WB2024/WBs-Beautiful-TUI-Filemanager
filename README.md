@@ -449,6 +449,12 @@ When inspecting a video file:
 - **Bit Depth**: Resolution in bits (16-bit, 24-bit, etc.)
 - **Channels**: Stereo, Mono, or surround configuration
 
+**Data source indicators:**
+Bitrate values show an icon indicating how the data was obtained:
+- **📊 Stream**: Extracted directly from audio stream analysis (most accurate)
+- **🔢 Calculated**: Computed from file size and duration
+- **📝 Format**: Extracted from container format metadata
+
 **Comparing two audio files:**
 1. Open the first audio file (press Enter)
 2. In the inspector, press **c** to start comparison
@@ -517,6 +523,15 @@ When inspecting a video file:
 - **Full HD (1080p)**: 1920x1080 or higher
 - **HD (720p)**: 1280x720 or higher
 - **SD (480p)**: 854x480 or higher
+
+**Data source indicators:**
+Bitrate values show an icon indicating how the data was obtained:
+- **📊 Stream**: Extracted directly from video/audio stream analysis (most accurate)
+- **🔢 Calculated**: Computed from file size and duration
+- **📝 Format**: Extracted from container format metadata
+- **⚠️ Estimated**: Rough estimate based on typical ratios (audio only)
+
+The inspector prioritizes stream analysis, then falls back to calculations if stream data is unavailable.
 
 **Comparing two video files:**
 1. Open the first video file (press Enter)

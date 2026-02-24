@@ -1233,17 +1233,40 @@ class AudioInspector:
             # Extract format info
             format_info = data.get('format', {})
             
+            # Get basic properties
+            file_size = int(format_info.get('size', 0))
+            duration = float(format_info.get('duration', 0))
+            
+            # Extract bitrate with fallback calculation
+            stream_bitrate = audio_stream.get('bit_rate')
+            format_bitrate = format_info.get('bit_rate')
+            
+            if stream_bitrate:
+                bit_rate = int(stream_bitrate)
+                bitrate_source = 'stream'  # Extracted from audio stream
+            elif format_bitrate:
+                bit_rate = int(format_bitrate)
+                bitrate_source = 'format'  # Extracted from container format
+            elif file_size > 0 and duration > 0:
+                # Calculate from file size and duration
+                bit_rate = int((file_size * 8) / duration)
+                bitrate_source = 'calculated'
+            else:
+                bit_rate = 0
+                bitrate_source = 'unavailable'
+            
             # Build comprehensive audio info
             info = {
                 'filepath': filepath,
                 'filename': Path(filepath).name,
-                'file_size': int(format_info.get('size', 0)),
-                'duration': float(format_info.get('duration', 0)),
+                'file_size': file_size,
+                'duration': duration,
                 'format_name': format_info.get('format_name', 'Unknown'),
                 'codec': audio_stream.get('codec_name', 'Unknown'),
                 'codec_long': audio_stream.get('codec_long_name', 'Unknown'),
                 'sample_rate': int(audio_stream.get('sample_rate', 0)),
-                'bit_rate': int(audio_stream.get('bit_rate', format_info.get('bit_rate', 0))),
+                'bit_rate': bit_rate,
+                'bitrate_source': bitrate_source,
                 'channels': int(audio_stream.get('channels', 0)),
                 'channel_layout': audio_stream.get('channel_layout', 'Unknown'),
                 'bit_depth': audio_stream.get('bits_per_sample', audio_stream.get('bits_per_raw_sample', 'N/A')),
@@ -1385,7 +1408,11 @@ class AudioInspector:
         height, width = self.stdscr.getmaxyx()
         
         # Separator
-        self.stdscr.addstr(height - 3, 0, "─" * width)
+        self.stdscr.addstr(height - 4, 0, "─" * width)
+        
+        # Legend for data sources
+        legend = "📊 Stream | 🔢 Calculated | 📝 Format"
+        self.stdscr.addstr(height - 3, 1, legend[:width-2], curses.color_pair(10))
         
         # Help text
         if self.show_comparison:
@@ -1463,6 +1490,16 @@ class AudioInspector:
         # Bitrate
         self.stdscr.addstr(current_y, start_x, "Bitrate:")
         br_display = self.format_bitrate(info['bit_rate'])
+        
+        # Add source indicator
+        source = info.get('bitrate_source', 'unknown')
+        if source == 'stream':
+            br_display += " 📊"
+        elif source == 'calculated':
+            br_display += " 🔢"
+        elif source == 'format':
+            br_display += " 📝"
+        
         br_color = curses.color_pair(2) if info['bit_rate'] >= 320000 else curses.color_pair(26)
         self.stdscr.addstr(current_y, start_x + 16, br_display, br_color)
         current_y += 1
@@ -1727,12 +1764,53 @@ class VideoInspector:
             # Extract format info
             format_info = data.get('format', {})
             
+            # Get basic properties
+            file_size = int(format_info.get('size', 0))
+            duration = float(format_info.get('duration', 0))
+            
+            # Extract video bitrate with fallback calculation
+            video_stream_bitrate = video_stream.get('bit_rate')
+            format_bitrate = format_info.get('bit_rate')
+            
+            if video_stream_bitrate:
+                video_bitrate = int(video_stream_bitrate)
+                video_bitrate_source = 'stream'
+            elif format_bitrate:
+                # Use total bitrate, will subtract audio if available
+                video_bitrate = int(format_bitrate)
+                video_bitrate_source = 'format'
+            elif file_size > 0 and duration > 0:
+                # Calculate from file size
+                video_bitrate = int((file_size * 8) / duration)
+                video_bitrate_source = 'calculated'
+            else:
+                video_bitrate = 0
+                video_bitrate_source = 'unavailable'
+            
+            # Extract audio bitrate with fallback
+            audio_bitrate = 0
+            audio_bitrate_source = 'unavailable'
+            if audio_stream:
+                audio_stream_bitrate = audio_stream.get('bit_rate')
+                if audio_stream_bitrate:
+                    audio_bitrate = int(audio_stream_bitrate)
+                    audio_bitrate_source = 'stream'
+                    # If video bitrate came from format, subtract audio to get video-only
+                    if video_bitrate_source == 'format':
+                        video_bitrate = max(0, video_bitrate - audio_bitrate)
+                elif duration > 0:
+                    # Estimate audio bitrate (typical audio is 5-10% of total)
+                    # This is a rough estimate
+                    estimated_audio = int(video_bitrate * 0.07) if video_bitrate > 0 else 128000
+                    audio_bitrate = min(estimated_audio, 320000)  # Cap at 320kbps
+                    audio_bitrate_source = 'estimated'
+            
             # Build comprehensive video info
             info = {
                 'filepath': filepath,
                 'filename': Path(filepath).name,
-                'file_size': int(format_info.get('size', 0)),
-                'duration': float(format_info.get('duration', 0)),
+                'file_size': file_size,
+                'duration': duration,
                 'format_name': format_info.get('format_name', 'Unknown'),
                 
                 # Video properties
@@ -1740,7 +1818,8 @@ class VideoInspector:
                 'video_codec_long': video_stream.get('codec_long_name', 'Unknown'),
                 'width': int(video_stream.get('width', 0)),
                 'height': int(video_stream.get('height', 0)),
-                'video_bitrate': int(video_stream.get('bit_rate', 0)),
+                'video_bitrate': video_bitrate,
+                'video_bitrate_source': video_bitrate_source,
                 'fps': self.parse_fps(video_stream.get('r_frame_rate', '0/1')),
                 'pix_fmt': video_stream.get('pix_fmt', 'Unknown'),
                 'color_space': video_stream.get('color_space', 'Unknown'),
@@ -1749,12 +1828,13 @@ class VideoInspector:
                 # Audio properties (if available)
                 'has_audio': audio_stream is not None,
                 'audio_codec': audio_stream.get('codec_name', 'N/A') if audio_stream else 'N/A',
-                'audio_bitrate': int(audio_stream.get('bit_rate', 0)) if audio_stream else 0,
+                'audio_bitrate': audio_bitrate,
+                'audio_bitrate_source': audio_bitrate_source,
                 'audio_sample_rate': int(audio_stream.get('sample_rate', 0)) if audio_stream else 0,
                 'audio_channels': int(audio_stream.get('channels', 0)) if audio_stream else 0,
                 
                 # Overall bitrate
-                'total_bitrate': int(format_info.get('bit_rate', 0)),
+                'total_bitrate': int(format_info.get('bit_rate', 0)) if format_info.get('bit_rate') else video_bitrate + audio_bitrate,
                 
                 'tags': format_info.get('tags', {}),
             }
@@ -1932,7 +2012,11 @@ class VideoInspector:
         height, width = self.stdscr.getmaxyx()
         
         # Separator
-        self.stdscr.addstr(height - 3, 0, "─" * width)
+        self.stdscr.addstr(height - 4, 0, "─" * width)
+        
+        # Legend for data sources
+        legend = "📊 Stream | 🔢 Calculated | 📝 Format | ⚠️ Estimated"
+        self.stdscr.addstr(height - 3, 1, legend[:width-2], curses.color_pair(10))
         
         # Help text
         if self.show_comparison:
@@ -2012,6 +2096,16 @@ class VideoInspector:
         self.stdscr.addstr(current_y, start_x, "Video Bitrate:")
         vbitrate = info.get('video_bitrate', info.get('total_bitrate', 0))
         br_display = self.format_bitrate(vbitrate)
+        
+        # Add source indicator
+        source = info.get('video_bitrate_source', 'unknown')
+        if source == 'stream':
+            br_display += " 📊"
+        elif source == 'calculated':
+            br_display += " 🔢"
+        elif source == 'format':
+            br_display += " 📝"
+        
         br_color = curses.color_pair(2) if vbitrate >= 10000000 else curses.color_pair(26)
         self.stdscr.addstr(current_y, start_x + 16, br_display, br_color)
         current_y += 1
@@ -2031,7 +2125,18 @@ class VideoInspector:
             
             if info['audio_bitrate'] > 0:
                 self.stdscr.addstr(current_y, start_x, "Audio Bitrate:")
-                self.stdscr.addstr(current_y, start_x + 16, self.format_bitrate(info['audio_bitrate']), curses.color_pair(26))
+                abr_display = self.format_bitrate(info['audio_bitrate'])
+                
+                # Add source indicator
+                source = info.get('audio_bitrate_source', 'unknown')
+                if source == 'stream':
+                    abr_display += " 📊"
+                elif source == 'calculated':
+                    abr_display += " 🔢"
+                elif source == 'estimated':
+                    abr_display += " ⚠️"
+                
+                self.stdscr.addstr(current_y, start_x + 16, abr_display, curses.color_pair(26))
                 current_y += 1
         else:
             self.stdscr.addstr(current_y, start_x, "Audio:")
