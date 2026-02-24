@@ -26,13 +26,17 @@ A beautiful, interactive terminal-based file manager with built-in tools for Lin
 
 #### 🔓 Permission Manager
 - Set **777 permissions recursively** on current directory
+- Uses `chmod -R 777` command
 - Confirmation prompts for safety
 - One-key access with `p`
+
+**Note:** For a standalone permission tool with more options (including ownership changes), use the included `fixperms` utility from the command line.
 
 #### 📦 Archive Extractor
 - Extract **zip, tar, gz, bz2, xz, rar, 7z** archives
 - Select individual files or extract all
-- Integrates with system `extractfile` command
+- Uses the included `extractfile` utility
+- Automatically sets 777 permissions on extracted files
 - Visual progress and confirmation
 
 #### 🔍 Empty Folder Analyzer
@@ -55,7 +59,8 @@ A beautiful, interactive terminal-based file manager with built-in tools for Lin
 - **Python 3.6+**
 - **Linux/Unix** system (tested on Debian/Ubuntu)
 - Terminal with **color support**
-- Optional: `extractfile` command for archive extraction (can be installed separately)
+
+**Note:** The required `extractfile` and `fixperms` utilities are included in this repository and will be installed along with the file manager.
 
 ## 🚀 Installation
 
@@ -67,25 +72,32 @@ cd /path/to/your/projects
 git clone https://github.com/WB2024/WBs-Beautiful-TUI-Filemanager.git
 cd WBs-Beautiful-TUI-Filemanager
 
-# 2. Copy to system path
-sudo cp filemanager /usr/local/bin/filemanager
-sudo chmod +x /usr/local/bin/filemanager
+# 2. Copy all three utilities to system path
+sudo cp filemanager extractfile fixperms /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms
 
 # 3. Run it!
 filemanager
 ```
 
+**What gets installed:**
+- `filemanager` - The main TUI file manager
+- `extractfile` - Archive extraction utility (used by the file manager)
+- `fixperms` - Standalone permission fixing tool (sets 777 recursively)
+
 ### Manual Installation
 
 ```bash
-# 1. Download the filemanager script
+# 1. Download all three scripts
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/filemanager
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/extractfile
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/fixperms
 
-# 2. Make it executable
-chmod +x filemanager
+# 2. Make them executable
+chmod +x filemanager extractfile fixperms
 
 # 3. Move to PATH
-sudo mv filemanager /usr/local/bin/
+sudo mv filemanager extractfile fixperms /usr/local/bin/
 
 # 4. Run from anywhere
 filemanager
@@ -94,13 +106,60 @@ filemanager
 ### Verify Installation
 
 ```bash
-# Check if installed correctly
-which filemanager
+# Check if all utilities are installed correctly
+which filemanager extractfile fixperms
 
-# Should output: /usr/local/bin/filemanager
+# Should output:
+# /usr/local/bin/filemanager
+# /usr/local/bin/extractfile
+# /usr/local/bin/fixperms
 ```
 
-## 📖 Usage Guide
+## � Included Utilities
+
+This package includes three powerful command-line tools:
+
+### 1. `filemanager` - Interactive TUI File Manager
+The main application providing a beautiful terminal-based file browser with built-in tools for navigation, bookmarks, archive extraction, and folder analysis.
+
+### 2. `extractfile` - Universal Archive Extractor
+A standalone utility for extracting various archive formats. Can be used independently or is automatically called by the file manager.
+
+**Features:**
+- Supports: `.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.gz`, `.bz2`, `.xz`, `.rar`, `.7z`
+- Automatically sets 777 permissions on extracted files
+- Can extract single archives or all archives in a directory
+
+**Usage examples:**
+```bash
+extractfile archive.zip              # Extract specific file
+extractfile file1.zip file2.tar.gz   # Extract multiple files
+extractfile                          # Extract all archives in current directory
+extractfile -l                       # List extractable files
+```
+
+**Dependencies for some formats:**
+- RAR files: `sudo apt install unrar`
+- 7z files: `sudo apt install p7zip-full`
+
+### 3. `fixperms` - Permission Fixer
+A standalone utility for recursively setting 777 permissions and ownership on directories.
+
+**Features:**
+- Sets 777 (rwxrwxrwx) permissions recursively
+- Can optionally change ownership
+- Interactive confirmation prompts
+- Detailed progress reporting
+
+**Usage examples:**
+```bash
+fixperms                             # Fix current directory
+fixperms /var/www                    # Fix specific directory
+fixperms . nobody:nogroup            # Fix with specific ownership
+sudo fixperms                        # Run with sudo for ownership changes
+```
+
+## �📖 Usage Guide
 
 ### Basic Navigation
 
@@ -182,8 +241,6 @@ Quit:             q
 3. Use `↑`/`↓` to navigate menu
 4. Press `Space` on "Extract All" to toggle, or select individual archive
 5. Press `Enter` to extract selected archives
-
-**Note:** Requires the `extractfile` command to be installed on your system.
 
 **Supported formats:**
 - `.zip`, `.tar`, `.tar.gz`, `.tgz`
