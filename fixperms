@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import subprocess
+from pathlib import Path
+
+def fix_permissions(target_dir=None, owner=None, group=None):
+    """
+    Set 777 permissions and neutral ownership for all files and folders
+    in the specified directory.
+    """
+    if target_dir is None:
+        target_dir = Path.cwd()
+    else:
+        target_dir = Path(target_dir)
+    
+    if not target_dir.exists():
+        print(f"✗ Error: Directory '{target_dir}' does not exist")
+        sys.exit(1)
+    
+    print(f"\n{'='*70}")
+    print(f"  FIXING PERMISSIONS IN: {target_dir}")
+    print(f"{'='*70}\n")
+    
+    # Determine ownership
+    if owner is None:
+        # Use current user as default
+        owner = os.environ.get('USER', 'nobody')
+    if group is None:
+        # Use current user's primary group as default
+        group = owner
+    
+    ownership = f"{owner}:{group}"
+    
+    print(f"📋 Settings:")
+    print(f"   Permissions: 777 (rwxrwxrwx)")
+    print(f"   Ownership:   {ownership}")
+    print(f"\n{'='*70}\n")
+    
+    # Confirm action
+    confirm = input(f"⚠️  This will modify ALL files and folders in '{target_dir}'.\n   Continue? (y/N): ").strip().lower()
+    
+    if confirm != 'y':
+        print("\n✗ Cancelled\n")
+        sys.exit(0)
+    
+    print("\n🔧 Processing...\n")
+    
+    try:
+        # Change permissions recursively
+        print(f"→ Setting permissions to 777...")
+        subprocess.run(['chmod', '-R', '777', str(target_dir)], check=True)
+        print("✓ Permissions updated")
+        
+        # Change ownership recursively
+        print(f"→ Setting ownership to {ownership}...")
+        subprocess.run(['chown', '-R', ownership, str(target_dir)], check=True)
+        print("✓ Ownership updated")
+        
+        print(f"\n{'='*70}")
+        print("✓ ALL DONE! Permissions and ownership updated successfully")
+        print(f"{'='*70}\n")
+        
+    except subprocess.CalledProcessError as e:
+        print(f"\n✗ Error: {e}")
+        print("\n💡 Tip: You may need to run this with sudo for ownership changes:")
+        print(f"   sudo fixperms\n")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n\n✗ Interrupted\n")
+        sys.exit(1)
+
+def main():
+    """Main entry point."""
+    # Parse simple arguments
+    target_dir = None
+    owner = None
+    group = None
+    
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ['-h', '--help']:
+            print("""
+Usage: fixperms [directory] [owner:group]
+
+Sets 777 permissions and ownership for all files and folders.
+
+Arguments:
+  directory     Target directory (default: current directory)
+  owner:group   Ownership to set (default: current user)
+
+Examples:
+  fixperms                    # Fix current directory
+  fixperms /var/www           # Fix specific directory
+  fixperms . nobody:nogroup   # Fix with specific ownership
+  sudo fixperms               # Run with sudo if needed
+
+Note: Changing ownership typically requires sudo/root privileges.
+""")
+            sys.exit(0)
+        
+        target_dir = sys.argv[1]
+        
+        if len(sys.argv) > 2:
+            ownership_parts = sys.argv[2].split(':')
+            owner = ownership_parts[0]
+            if len(ownership_parts) > 1:
+                group = ownership_parts[1]
+    
+    fix_permissions(target_dir, owner, group)
+
+if __name__ == "__main__":
+    main()

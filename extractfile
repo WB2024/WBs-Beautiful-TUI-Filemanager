@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""
+Universal archive extractor script
+Extract compressed files (zip, tar, gz, bz2, xz, rar, 7z) with ease
+"""
+
+import os
+import sys
+import argparse
+import zipfile
+import tarfile
+import shutil
+import subprocess
+from pathlib import Path
+
+
+class Extractor:
+    # Supported archive extensions and their types
+    ARCHIVE_TYPES = {
+        '.zip': 'zip',
+        '.tar': 'tar',
+        '.tar.gz': 'tar',
+        '.tgz': 'tar',
+        '.tar.bz2': 'tar',
+        '.tbz2': 'tar',
+        '.tar.xz': 'tar',
+        '.txz': 'tar',
+        '.gz': 'gzip',
+        '.bz2': 'bzip2',
+        '.xz': 'xz',
+        '.rar': 'rar',
+        '.7z': '7z',
+    }
+
+    def __init__(self, verbose=True):
+        self.verbose = verbose
+
+    def log(self, message):
+        """Print message if verbose mode is on"""
+        if self.verbose:
+            print(message)
+
+    def set_permissions_recursive(self, path):
+        """Set 777 permissions recursively on a directory or file"""
+        path = Path(path)
+        
+        try:
+            if path.is_file():
+                os.chmod(path, 0o777)
+                self.log(f"🔓 Set permissions 777 on file: {path.name}")
+            elif path.is_dir():
+                # Set permission on the directory itself
+                os.chmod(path, 0o777)
+                
+                # Recursively set permissions on all contents
+                for item in path.rglob('*'):
+                    try:
+                        os.chmod(item, 0o777)
+                    except Exception as e:
+                        self.log(f"⚠️  Warning: Could not set permissions on {item}: {e}")
+                
+                self.log(f"🔓 Set permissions 777 on directory and contents: {path.name}")
+        except Exception as e:
+            self.log(f"⚠️  Warning: Could not set permissions on {path}: {e}")
+
+    def get_archive_type(self, filepath):
+        """Determine archive type from filename"""
+        filepath_lower = filepath.lower()
+        
+        # Check for double extensions first (e.g., .tar.gz)
+        for ext in ['.tar.gz', '.tar.bz2', '.tar.xz']:
+            if filepath_lower.endswith(ext):
+                return self.ARCHIVE_TYPES[ext]
+        
+        # Check single extensions
+        for ext, archive_type in self.ARCHIVE_TYPES.items():
+            if filepath_lower.endswith(ext):
+                return archive_type
+        
+        return None
+
+    def get_output_dir(self, archive_path):
+        """Generate output directory name from archive name"""
+        archive_path = Path(archive_path)
+        name = archive_path.name
+        
+        # Remove known extensions
+        for ext in sorted(self.ARCHIVE_TYPES.keys(), key=len, reverse=True):
+            if name.lower().endswith(ext):
+                name = name[:-len(ext)]
+                break
+        
+        return archive_path.parent / name
+
+    def extract_zip(self, archive_path, output_dir):
+        """Extract ZIP archive"""
+        self.log(f"📦 Extracting ZIP: {archive_path}")
+        with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+            zip_ref.extractall(output_dir)
+
+    def extract_tar(self, archive_path, output_dir):
+        """Extract TAR archive (including .tar.gz, .tar.bz2, .tar.xz)"""
+        self.log(f"📦 Extracting TAR: {archive_path}")
+        with tarfile.open(archive_path, 'r:*') as tar_ref:
+            tar_ref.extractall(output_dir)
+
+    def extract_rar(self, archive_path, output_dir):
+        """Extract RAR archive using unrar command"""
+        self.log(f"📦 Extracting RAR: {archive_path}")
+        
+        # Check if unrar is available
+        if not shutil.which('unrar'):
+            raise RuntimeError(
+                "unrar is not installed. Install it with:\n"
+                "  Ubuntu/Debian: sudo apt install unrar\n"
+                "  macOS: brew install unrar"
+            )
+        
+        output_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ['unrar', 'x', '-y', str(archive_path), str(output_dir) + '/'],
+            check=True,
+            capture_output=not self.verbose
+        )
+
+    def extract_7z(self, archive_path, output_dir):
+        """Extract 7z archive using 7z command"""
+        self.log(f"📦 Extracting 7Z: {archive_path}")
+        
+        # Check if 7z is available
+        if not shutil.which('7z'):
+            raise RuntimeError(
+                "7z is not installed. Install it with:\n"
+                "  Ubuntu/Debian: sudo apt install p7zip-full\n"
+                "  macOS: brew install p7zip"
+            )
+        
+        output_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ['7z', 'x', f'-o{output_dir}', str(archive_path), '-y'],
+            check=True,
+            capture_output=not self.verbose
+        )
+
+    def extract_gzip(self, archive_path, output_dir):
+        """Extract single .gz file"""
+        self.log(f"📦 Extracting GZIP: {archive_path}")
+        import gzip
+        
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / Path(archive_path).stem
+        
+        with gzip.open(archive_path, 'rb') as f_in:
+            with open(output_file, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+
+    def extract_bzip2(self, archive_path, output_dir):
+        """Extract single .bz2 file"""
+        self.log(f"📦 Extracting BZIP2: {archive_path}")
+        import bz2
+        
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / Path(archive_path).stem
+        
+        with bz2.open(archive_path, 'rb') as f_in:
+            with open(output_file, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+
+    def extract_xz(self, archive_path, output_dir):
+        """Extract single .xz file"""
+        self.log(f"📦 Extracting XZ: {archive_path}")
+        import lzma
+        
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / Path(archive_path).stem
+        
+        with lzma.open(archive_path, 'rb') as f_in:
+            with open(output_file, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+
+    def extract_archive(self, archive_path):
+        """Extract a single archive file"""
+        archive_path = Path(archive_path).resolve()
+        
+        if not archive_path.exists():
+            raise FileNotFoundError(f"File not found: {archive_path}")
+        
+        archive_type = self.get_archive_type(str(archive_path))
+        
+        if not archive_type:
+            raise ValueError(f"Unsupported archive type: {archive_path}")
+        
+        output_dir = self.get_output_dir(archive_path)
+        
+        # Create output directory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Extract based on type
+        try:
+            if archive_type == 'zip':
+                self.extract_zip(archive_path, output_dir)
+            elif archive_type == 'tar':
+                self.extract_tar(archive_path, output_dir)
+            elif archive_type == 'rar':
+                self.extract_rar(archive_path, output_dir)
+            elif archive_type == '7z':
+                self.extract_7z(archive_path, output_dir)
+            elif archive_type == 'gzip':
+                self.extract_gzip(archive_path, output_dir)
+            elif archive_type == 'bzip2':
+                self.extract_bzip2(archive_path, output_dir)
+            elif archive_type == 'xz':
+                self.extract_xz(archive_path, output_dir)
+            
+            self.log(f"✅ Successfully extracted to: {output_dir}")
+            
+            # Set permissions to 777 on extracted folder and all its contents
+            self.set_permissions_recursive(output_dir)
+            
+            # Set permissions to 777 on the original archive file
+            self.set_permissions_recursive(archive_path)
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"❌ Error extracting {archive_path}: {e}")
+            # Clean up failed extraction directory if it's empty
+            if output_dir.exists() and not any(output_dir.iterdir()):
+                output_dir.rmdir()
+            raise
+
+    def find_archives(self, directory='.'):
+        """Find all archive files in the specified directory"""
+        directory = Path(directory)
+        archives = []
+        
+        for file in directory.iterdir():
+            if file.is_file() and self.get_archive_type(str(file)):
+                archives.append(file)
+        
+        return sorted(archives)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Universal archive extractor - Extract compressed files easily',
+        epilog='Examples:\n'
+               '  extractfile                 # Extract all archives in current directory\n'
+               '  extractfile archive.zip     # Extract specific file\n'
+               '  extractfile file1.zip file2.tar.gz  # Extract multiple files\n',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument(
+        'files',
+        nargs='*',
+        help='Specific archive file(s) to extract (extracts all if not specified)'
+    )
+    
+    parser.add_argument(
+        '-q', '--quiet',
+        action='store_true',
+        help='Suppress output messages'
+    )
+    
+    parser.add_argument(
+        '-l', '--list',
+        action='store_true',
+        help='List all extractable files in current directory without extracting'
+    )
+    
+    args = parser.parse_args()
+    
+    extractor = Extractor(verbose=not args.quiet)
+    
+    # List mode
+    if args.list:
+        archives = extractor.find_archives()
+        if archives:
+            print("Extractable files found:")
+            for archive in archives:
+                archive_type = extractor.get_archive_type(str(archive))
+                print(f"  - {archive.name} ({archive_type})")
+        else:
+            print("No extractable files found in current directory.")
+        return 0
+    
+    # Extract specific files
+    if args.files:
+        archives_to_extract = [Path(f) for f in args.files]
+    else:
+        # Extract all archives in current directory
+        archives_to_extract = extractor.find_archives()
+        
+        if not archives_to_extract:
+            print("No extractable files found in current directory.")
+            print(f"Supported formats: {', '.join(extractor.ARCHIVE_TYPES.keys())}")
+            return 0
+        
+        extractor.log(f"Found {len(archives_to_extract)} archive(s) to extract")
+    
+    # Extract each archive
+    success_count = 0
+    error_count = 0
+    
+    for archive in archives_to_extract:
+        try:
+            extractor.extract_archive(archive)
+            success_count += 1
+        except Exception as e:
+            error_count += 1
+            if not args.quiet:
+                print(f"Error: {e}", file=sys.stderr)
+    
+    # Summary
+    if len(archives_to_extract) > 1 and not args.quiet:
+        print(f"\n{'='*50}")
+        print(f"✅ Successfully extracted: {success_count}")
+        if error_count > 0:
+            print(f"❌ Failed: {error_count}")
+    
+    return 0 if error_count == 0 else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
