@@ -1201,6 +1201,24 @@ class AudioInspector:
                 'message': 'Install ffmpeg: sudo apt install ffmpeg'
             }
         
+        def safe_int(value, default=0):
+            """Safely convert value to int"""
+            if value is None or value == '':
+                return default
+            try:
+                return int(float(str(value)))
+            except (ValueError, TypeError):
+                return default
+        
+        def safe_float(value, default=0.0):
+            """Safely convert value to float"""
+            if value is None or value == '':
+                return default
+            try:
+                return float(str(value))
+            except (ValueError, TypeError):
+                return default
+        
         try:
             # Run ffprobe to get audio information
             cmd = [
@@ -1212,13 +1230,19 @@ class AudioInspector:
                 str(filepath)
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             
             if result.returncode != 0:
-                return {'error': 'Failed to analyze file'}
+                return {'error': f'Failed to analyze file (exit code {result.returncode})'}
+            
+            if not result.stdout.strip():
+                return {'error': 'ffprobe returned no data'}
             
             import json
-            data = json.loads(result.stdout)
+            try:
+                data = json.loads(result.stdout)
+            except json.JSONDecodeError as e:
+                return {'error': f'Invalid ffprobe output: {str(e)}'}
             
             # Extract audio stream info
             audio_stream = None
@@ -1228,28 +1252,31 @@ class AudioInspector:
                     break
             
             if not audio_stream:
-                return {'error': 'No audio stream found'}
+                return {'error': 'No audio stream found in file'}
             
             # Extract format info
             format_info = data.get('format', {})
             
-            # Get basic properties
-            file_size = int(format_info.get('size', 0))
-            duration = float(format_info.get('duration', 0))
+            # Get basic properties with safe conversion
+            file_size = safe_int(format_info.get('size'), 0)
+            duration = safe_float(format_info.get('duration'), 0.0)
+            
+            # If duration not in format, try audio stream
+            if duration == 0:
+                duration = safe_float(audio_stream.get('duration'), 0.0)
             
             # Extract bitrate with fallback calculation
-            stream_bitrate = audio_stream.get('bit_rate', None)
-            format_bitrate = format_info.get('bit_rate', None)
+            stream_bitrate = audio_stream.get('bit_rate')
+            format_bitrate = format_info.get('bit_rate')
             
             # Determine bitrate and source
-            if stream_bitrate is not None and stream_bitrate != '':
-                bit_rate = int(float(stream_bitrate))
-                bitrate_source = 'stream'  # Extracted from audio stream
-            elif format_bitrate is not None and format_bitrate != '':
-                bit_rate = int(float(format_bitrate))
-                bitrate_source = 'format'  # Extracted from container format
+            if stream_bitrate is not None and str(stream_bitrate).strip() != '':
+                bit_rate = safe_int(stream_bitrate, 0)
+                bitrate_source = 'stream'
+            elif format_bitrate is not None and str(format_bitrate).strip() != '':
+                bit_rate = safe_int(format_bitrate, 0)
+                bitrate_source = 'format'
             elif file_size > 0 and duration > 0:
-                # Calculate from file size and duration
                 bit_rate = int((file_size * 8) / duration)
                 bitrate_source = 'calculated'
             else:
@@ -1265,10 +1292,10 @@ class AudioInspector:
                 'format_name': format_info.get('format_name', 'Unknown'),
                 'codec': audio_stream.get('codec_name', 'Unknown'),
                 'codec_long': audio_stream.get('codec_long_name', 'Unknown'),
-                'sample_rate': int(audio_stream.get('sample_rate', 0)),
+                'sample_rate': safe_int(audio_stream.get('sample_rate'), 0),
                 'bit_rate': bit_rate,
                 'bitrate_source': bitrate_source,
-                'channels': int(audio_stream.get('channels', 0)),
+                'channels': safe_int(audio_stream.get('channels'), 0),
                 'channel_layout': audio_stream.get('channel_layout', 'Unknown'),
                 'bit_depth': audio_stream.get('bits_per_sample', audio_stream.get('bits_per_raw_sample', 'N/A')),
                 'bits_per_sample': audio_stream.get('bits_per_sample', 'N/A'),
@@ -1278,9 +1305,9 @@ class AudioInspector:
             return info
             
         except subprocess.TimeoutExpired:
-            return {'error': 'Analysis timeout'}
+            return {'error': 'Analysis timeout (file too large or slow disk)'}
         except Exception as e:
-            return {'error': f'Analysis failed: {str(e)}'}
+            return {'error': f'Analysis failed: {type(e).__name__}: {str(e)}'}
     
     def get_quality_score(self, info):
         """Calculate quality score (0-100) based on audio metrics"""
@@ -1412,7 +1439,7 @@ class AudioInspector:
         self.stdscr.addstr(height - 4, 0, "─" * width)
         
         # Legend for data sources
-        legend = "📊 Stream | 🔢 Calculated | 📝 Format"
+        legend = "[S]=Stream [F]=Format [C]=Calculated"
         self.stdscr.addstr(height - 3, 1, legend[:width-2], curses.color_pair(10))
         
         # Help text
@@ -1492,14 +1519,16 @@ class AudioInspector:
         self.stdscr.addstr(current_y, start_x, "Bitrate:")
         br_display = self.format_bitrate(info['bit_rate'])
         
-        # Add source indicator
+        # Add source indicator (ASCII for terminal compatibility)
         source = info.get('bitrate_source', 'unknown')
         if source == 'stream':
-            br_display += " 📊"
+            br_display += " [S]"
         elif source == 'calculated':
-            br_display += " 🔢"
+            br_display += " [C]"
         elif source == 'format':
-            br_display += " 📝"
+            br_display += " [F]"
+        else:
+            br_display += " [?]"
         
         br_color = curses.color_pair(2) if info['bit_rate'] >= 320000 else curses.color_pair(26)
         self.stdscr.addstr(current_y, start_x + 16, br_display, br_color)
@@ -1731,6 +1760,24 @@ class VideoInspector:
                 'message': 'Install ffmpeg: sudo apt install ffmpeg'
             }
         
+        def safe_int(value, default=0):
+            """Safely convert value to int"""
+            if value is None or value == '':
+                return default
+            try:
+                return int(float(str(value)))
+            except (ValueError, TypeError):
+                return default
+        
+        def safe_float(value, default=0.0):
+            """Safely convert value to float"""
+            if value is None or value == '':
+                return default
+            try:
+                return float(str(value))
+            except (ValueError, TypeError):
+                return default
+        
         try:
             # Run ffprobe to get video information
             cmd = [
@@ -1745,44 +1792,69 @@ class VideoInspector:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             
             if result.returncode != 0:
-                return {'error': 'Failed to analyze file'}
+                return {'error': f'Failed to analyze file (exit code {result.returncode})'}
+            
+            if not result.stdout.strip():
+                return {'error': 'ffprobe returned no data'}
             
             import json
-            data = json.loads(result.stdout)
+            try:
+                data = json.loads(result.stdout)
+            except json.JSONDecodeError as e:
+                return {'error': f'Invalid ffprobe output: {str(e)}'}
             
             # Extract video and audio streams
+            # Skip attached pictures (album art) which are technically video streams
             video_stream = None
             audio_stream = None
             for stream in data.get('streams', []):
-                if stream.get('codec_type') == 'video' and not video_stream:
+                codec_type = stream.get('codec_type', '')
+                
+                # Check if it's a real video stream, not album art
+                if codec_type == 'video' and not video_stream:
+                    # Skip if it's an attached picture (album art)
+                    disposition = stream.get('disposition', {})
+                    if disposition.get('attached_pic', 0) == 1:
+                        continue
+                    # Skip very small "video" streams that are likely thumbnails
+                    width = safe_int(stream.get('width'), 0)
+                    height = safe_int(stream.get('height'), 0)
+                    if width < 100 or height < 100:
+                        continue
                     video_stream = stream
-                elif stream.get('codec_type') == 'audio' and not audio_stream:
+                elif codec_type == 'audio' and not audio_stream:
                     audio_stream = stream
             
             if not video_stream:
-                return {'error': 'No video stream found'}
+                return {'error': 'No video stream found in file'}
             
             # Extract format info
             format_info = data.get('format', {})
             
-            # Get basic properties
-            file_size = int(format_info.get('size', 0))
-            duration = float(format_info.get('duration', 0))
+            # Get basic properties with safe conversion
+            file_size = safe_int(format_info.get('size'), 0)
+            duration = safe_float(format_info.get('duration'), 0.0)
+            
+            # If duration not in format, try to get from video stream
+            if duration == 0:
+                duration = safe_float(video_stream.get('duration'), 0.0)
+            
+            # Get dimensions
+            width = safe_int(video_stream.get('width'), 0)
+            height = safe_int(video_stream.get('height'), 0)
             
             # Extract video bitrate with fallback calculation
-            video_stream_bitrate = video_stream.get('bit_rate', None)
-            format_bitrate = format_info.get('bit_rate', None)
+            video_stream_bitrate = video_stream.get('bit_rate')
+            format_bitrate = format_info.get('bit_rate')
             
             # Determine video bitrate and source
-            if video_stream_bitrate is not None and video_stream_bitrate != '':
-                video_bitrate = int(float(video_stream_bitrate))
+            if video_stream_bitrate is not None and str(video_stream_bitrate).strip() != '':
+                video_bitrate = safe_int(video_stream_bitrate, 0)
                 video_bitrate_source = 'stream'
-            elif format_bitrate is not None and format_bitrate != '':
-                # Use total bitrate, will subtract audio if available
-                video_bitrate = int(float(format_bitrate))
+            elif format_bitrate is not None and str(format_bitrate).strip() != '':
+                video_bitrate = safe_int(format_bitrate, 0)
                 video_bitrate_source = 'format'
             elif file_size > 0 and duration > 0:
-                # Calculate from file size
                 video_bitrate = int((file_size * 8) / duration)
                 video_bitrate_source = 'calculated'
             else:
@@ -1793,18 +1865,24 @@ class VideoInspector:
             audio_bitrate = 0
             audio_bitrate_source = 'unavailable'
             if audio_stream:
-                audio_stream_bitrate = audio_stream.get('bit_rate', None)
-                if audio_stream_bitrate is not None and audio_stream_bitrate != '':
-                    audio_bitrate = int(float(audio_stream_bitrate))
+                audio_stream_bitrate = audio_stream.get('bit_rate')
+                if audio_stream_bitrate is not None and str(audio_stream_bitrate).strip() != '':
+                    audio_bitrate = safe_int(audio_stream_bitrate, 0)
                     audio_bitrate_source = 'stream'
                     # If video bitrate came from format, subtract audio to get video-only
                     if video_bitrate_source == 'format' and audio_bitrate > 0:
                         video_bitrate = max(0, video_bitrate - audio_bitrate)
                 elif duration > 0 and video_bitrate > 0:
-                    # Estimate audio bitrate (typical audio is 5-10% of total)
+                    # Estimate audio bitrate
                     estimated_audio = int(video_bitrate * 0.07)
-                    audio_bitrate = min(max(128000, estimated_audio), 320000)  # 128-320 kbps range
+                    audio_bitrate = min(max(128000, estimated_audio), 320000)
                     audio_bitrate_source = 'estimated'
+            
+            # Parse frame rate
+            fps = self.parse_fps(video_stream.get('r_frame_rate', '0/1'))
+            # Fall back to avg_frame_rate if r_frame_rate fails
+            if fps == 0:
+                fps = self.parse_fps(video_stream.get('avg_frame_rate', '0/1'))
             
             # Build comprehensive video info
             info = {
@@ -1817,11 +1895,11 @@ class VideoInspector:
                 # Video properties
                 'video_codec': video_stream.get('codec_name', 'Unknown'),
                 'video_codec_long': video_stream.get('codec_long_name', 'Unknown'),
-                'width': int(video_stream.get('width', 0)),
-                'height': int(video_stream.get('height', 0)),
+                'width': width,
+                'height': height,
                 'video_bitrate': video_bitrate,
                 'video_bitrate_source': video_bitrate_source,
-                'fps': self.parse_fps(video_stream.get('r_frame_rate', '0/1')),
+                'fps': fps,
                 'pix_fmt': video_stream.get('pix_fmt', 'Unknown'),
                 'color_space': video_stream.get('color_space', 'Unknown'),
                 'bit_depth': video_stream.get('bits_per_raw_sample', 'N/A'),
@@ -1831,11 +1909,11 @@ class VideoInspector:
                 'audio_codec': audio_stream.get('codec_name', 'N/A') if audio_stream else 'N/A',
                 'audio_bitrate': audio_bitrate,
                 'audio_bitrate_source': audio_bitrate_source,
-                'audio_sample_rate': int(audio_stream.get('sample_rate', 0)) if audio_stream else 0,
-                'audio_channels': int(audio_stream.get('channels', 0)) if audio_stream else 0,
+                'audio_sample_rate': safe_int(audio_stream.get('sample_rate'), 0) if audio_stream else 0,
+                'audio_channels': safe_int(audio_stream.get('channels'), 0) if audio_stream else 0,
                 
                 # Overall bitrate
-                'total_bitrate': int(float(format_bitrate)) if (format_bitrate is not None and format_bitrate != '') else (video_bitrate + audio_bitrate),
+                'total_bitrate': safe_int(format_bitrate, video_bitrate + audio_bitrate),
                 
                 'tags': format_info.get('tags', {}),
             }
@@ -1846,9 +1924,9 @@ class VideoInspector:
             return info
             
         except subprocess.TimeoutExpired:
-            return {'error': 'Analysis timeout'}
+            return {'error': 'Analysis timeout (file too large or slow disk)'}
         except Exception as e:
-            return {'error': f'Analysis failed: {str(e)}'}
+            return {'error': f'Analysis failed: {type(e).__name__}: {str(e)}'}
     
     def parse_fps(self, fps_string):
         """Parse frame rate from fraction string like '30000/1001'"""
@@ -2016,7 +2094,7 @@ class VideoInspector:
         self.stdscr.addstr(height - 4, 0, "─" * width)
         
         # Legend for data sources
-        legend = "📊 Stream | 🔢 Calculated | 📝 Format | ⚠️ Estimated"
+        legend = "[S]=Stream [F]=Format [C]=Calculated [E]=Estimated"
         self.stdscr.addstr(height - 3, 1, legend[:width-2], curses.color_pair(10))
         
         # Help text
@@ -2098,14 +2176,16 @@ class VideoInspector:
         vbitrate = info.get('video_bitrate', info.get('total_bitrate', 0))
         br_display = self.format_bitrate(vbitrate)
         
-        # Add source indicator
+        # Add source indicator (ASCII for terminal compatibility)
         source = info.get('video_bitrate_source', 'unknown')
         if source == 'stream':
-            br_display += " 📊"
+            br_display += " [S]"
         elif source == 'calculated':
-            br_display += " 🔢"
+            br_display += " [C]"
         elif source == 'format':
-            br_display += " 📝"
+            br_display += " [F]"
+        else:
+            br_display += " [?]"
         
         br_color = curses.color_pair(2) if vbitrate >= 10000000 else curses.color_pair(26)
         self.stdscr.addstr(current_y, start_x + 16, br_display, br_color)
@@ -2128,14 +2208,16 @@ class VideoInspector:
                 self.stdscr.addstr(current_y, start_x, "Audio Bitrate:")
                 abr_display = self.format_bitrate(info['audio_bitrate'])
                 
-                # Add source indicator
+                # Add source indicator (ASCII for terminal compatibility)
                 source = info.get('audio_bitrate_source', 'unknown')
                 if source == 'stream':
-                    abr_display += " 📊"
+                    abr_display += " [S]"
                 elif source == 'calculated':
-                    abr_display += " 🔢"
+                    abr_display += " [C]"
                 elif source == 'estimated':
-                    abr_display += " ⚠️"
+                    abr_display += " [E]"
+                else:
+                    abr_display += " [?]"
                 
                 self.stdscr.addstr(current_y, start_x + 16, abr_display, curses.color_pair(26))
                 current_y += 1

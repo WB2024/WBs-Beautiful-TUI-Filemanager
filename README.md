@@ -450,10 +450,10 @@ When inspecting a video file:
 - **Channels**: Stereo, Mono, or surround configuration
 
 **Data source indicators:**
-Bitrate values show an icon indicating how the data was obtained:
-- **📊 Stream**: Extracted directly from audio stream analysis (most accurate)
-- **🔢 Calculated**: Computed from file size and duration
-- **📝 Format**: Extracted from container format metadata
+Bitrate values show a tag indicating how the data was obtained:
+- **[S] Stream**: Extracted directly from audio stream analysis (most accurate)
+- **[F] Format**: Extracted from container format metadata
+- **[C] Calculated**: Computed from file size and duration
 
 **Comparing two audio files:**
 1. Open the first audio file (press Enter)
@@ -525,11 +525,11 @@ Bitrate values show an icon indicating how the data was obtained:
 - **SD (480p)**: 854x480 or higher
 
 **Data source indicators:**
-Bitrate values show an icon indicating how the data was obtained:
-- **📊 Stream**: Extracted directly from video/audio stream analysis (most accurate)
-- **🔢 Calculated**: Computed from file size and duration
-- **📝 Format**: Extracted from container format metadata
-- **⚠️ Estimated**: Rough estimate based on typical ratios (audio only)
+Bitrate values show a tag indicating how the data was obtained:
+- **[S] Stream**: Extracted directly from video/audio stream analysis (most accurate)
+- **[F] Format**: Extracted from container format metadata
+- **[C] Calculated**: Computed from file size and duration
+- **[E] Estimated**: Rough estimate based on typical ratios (audio bitrate in videos)
 
 The inspector prioritizes stream analysis, then falls back to calculations if stream data is unavailable.
 
