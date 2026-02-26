@@ -1019,6 +1019,7 @@ class FileManager:
         empty = []
         near_empty = []
         non_empty = []
+        marked_folders = set()  # Track marked folders for bulk deletion
         
         # Scan directories
         for entry in self.entries:
@@ -1057,6 +1058,7 @@ class FileManager:
             return
         
         selected = 0
+        scroll_offset = 0
         
         while True:
             self.stdscr.clear()
@@ -1068,17 +1070,27 @@ class FileManager:
             self.stdscr.addstr(0, 0, title.center(width)[:width])
             self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
             
-            self.stdscr.addstr(2, 2, f"Empty: {len(empty)} | Near-empty: {len(near_empty)} | Non-empty: {len(non_empty)}", curses.color_pair(11))
+            # Stats line with marked count
+            stats_line = f"Empty: {len(empty)} | Near-empty: {len(near_empty)} | Non-empty: {len(non_empty)}"
+            if marked_folders:
+                stats_line += f" | Marked: {len(marked_folders)}"
+            self.stdscr.addstr(2, 2, stats_line, curses.color_pair(11))
             self.stdscr.addstr(3, 0, "─" * width)
             
-            # Show folders
+            # Show folders with scrolling
             start_y = 4
+            visible_rows = height - 7  # Leave room for header and footer
+            
+            # Adjust scroll offset based on selection
+            if selected < scroll_offset:
+                scroll_offset = selected
+            elif selected >= scroll_offset + visible_rows:
+                scroll_offset = selected - visible_rows + 1
+            
             current_y = start_y
             
-            for i, folder in enumerate(all_folders):
-                if current_y >= height - 3:
-                    break
-                
+            for i in range(scroll_offset, min(scroll_offset + visible_rows, len(all_folders))):
+                folder = all_folders[i]
                 name = folder['name']
                 size_str = self.get_size_string(folder['size'])
                 
@@ -1108,7 +1120,9 @@ class FileManager:
                     if len(types) > 3:
                         type_str += f" +{len(types)-3} more"
                 
-                display = f"{name}/ [{category}] ({size_str}) - {type_str}"
+                # Mark indicator
+                mark_indicator = "●" if folder['path'] in marked_folders else " "
+                display = f"{mark_indicator} {name}/ [{category}] ({size_str}) - {type_str}"
                 
                 if i == selected:
                     self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
@@ -1119,7 +1133,11 @@ class FileManager:
                 
                 current_y += 1
             
-            self.stdscr.addstr(height - 2, 2, "↑/↓: Navigate | i: Inspect | d: Delete | q: Cancel", curses.color_pair(11))
+            # Help text - two lines for all options
+            help_line1 = "↑/↓: Navigate | SPACE: Mark | i: Inspect | d: Delete one | D: Delete marked"
+            help_line2 = "E: Delete ALL empty | N: Delete ALL near-empty | q: Cancel"
+            self.stdscr.addstr(height - 3, 2, help_line1[:width-4], curses.color_pair(11))
+            self.stdscr.addstr(height - 2, 2, help_line2[:width-4], curses.color_pair(11))
             
             self.stdscr.refresh()
             
@@ -1130,34 +1148,191 @@ class FileManager:
                 selected = max(0, selected - 1)
             elif key == curses.KEY_DOWN:
                 selected = min(len(all_folders) - 1, selected + 1)
+            elif key == ord(' '):
+                # Toggle mark on current folder
+                if 0 <= selected < len(all_folders):
+                    folder_path = all_folders[selected]['path']
+                    if folder_path in marked_folders:
+                        marked_folders.remove(folder_path)
+                    else:
+                        marked_folders.add(folder_path)
+                    # Move to next item
+                    if selected < len(all_folders) - 1:
+                        selected += 1
             elif key == ord('i'):
                 # Inspect selected folder
                 if 0 <= selected < len(all_folders):
                     self.inspect_folder(all_folders[selected])
             elif key == ord('d'):
-                # Delete selected
-                folder = all_folders[selected]
-                
-                confirm_lines = [
-                    f"Delete folder: {folder['name']}?",
-                    "",
-                    "Press 'y' to confirm, any other key to cancel"
-                ]
-                
-                self.show_message_box("CONFIRM DELETE", confirm_lines, wait_for_key=False)
-                confirm_key = self.stdscr.getch()
-                
-                if confirm_key in [ord('y'), ord('Y')]:
-                    try:
-                        shutil.rmtree(folder['path'])
-                        self.message = f"Deleted: {folder['name']}"
-                        self.message_color = curses.COLOR_GREEN
-                        self.load_directory()
-                    except Exception as e:
-                        self.message = f"Error: {e}"
-                        self.message_color = curses.COLOR_RED
-                break
+                # Delete single selected folder
+                if 0 <= selected < len(all_folders):
+                    folder = all_folders[selected]
+                    
+                    confirm_lines = [
+                        f"Delete folder: {folder['name']}?",
+                        "",
+                        "Press 'y' to confirm, any other key to cancel"
+                    ]
+                    
+                    self.show_message_box("CONFIRM DELETE", confirm_lines, wait_for_key=False)
+                    confirm_key = self.stdscr.getch()
+                    
+                    if confirm_key in [ord('y'), ord('Y')]:
+                        try:
+                            shutil.rmtree(folder['path'])
+                            self.message = f"Deleted: {folder['name']}"
+                            self.message_color = curses.COLOR_GREEN
+                            # Remove from lists and continue
+                            marked_folders.discard(folder['path'])
+                            all_folders.remove(folder)
+                            if folder in empty:
+                                empty.remove(folder)
+                            elif folder in near_empty:
+                                near_empty.remove(folder)
+                            else:
+                                non_empty.remove(folder)
+                            # Adjust selection
+                            if selected >= len(all_folders):
+                                selected = max(0, len(all_folders) - 1)
+                            if not all_folders:
+                                self.load_directory()
+                                break
+                        except Exception as e:
+                            self.message = f"Error: {e}"
+                            self.message_color = curses.COLOR_RED
+            elif key == ord('D'):
+                # Delete all marked folders
+                if marked_folders:
+                    confirm_lines = [
+                        f"Delete {len(marked_folders)} marked folder(s)?",
+                        "",
+                        "This cannot be undone!",
+                        "",
+                        "Press 'y' to confirm, any other key to cancel"
+                    ]
+                    
+                    self.show_message_box("CONFIRM BULK DELETE", confirm_lines, wait_for_key=False)
+                    confirm_key = self.stdscr.getch()
+                    
+                    if confirm_key in [ord('y'), ord('Y')]:
+                        deleted_count = 0
+                        error_count = 0
+                        
+                        for folder_path in list(marked_folders):
+                            try:
+                                shutil.rmtree(folder_path)
+                                deleted_count += 1
+                                # Remove from all tracking lists
+                                for folder in all_folders[:]:
+                                    if folder['path'] == folder_path:
+                                        all_folders.remove(folder)
+                                        if folder in empty:
+                                            empty.remove(folder)
+                                        elif folder in near_empty:
+                                            near_empty.remove(folder)
+                                        else:
+                                            non_empty.remove(folder)
+                                        break
+                            except Exception as e:
+                                error_count += 1
+                        
+                        marked_folders.clear()
+                        self.message = f"Deleted {deleted_count} folder(s)"
+                        if error_count:
+                            self.message += f", {error_count} error(s)"
+                        self.message_color = curses.COLOR_GREEN if error_count == 0 else curses.COLOR_YELLOW
+                        
+                        # Adjust selection
+                        if selected >= len(all_folders):
+                            selected = max(0, len(all_folders) - 1)
+                        if not all_folders:
+                            self.load_directory()
+                            break
+            elif key == ord('E'):
+                # Delete ALL empty folders
+                if empty:
+                    confirm_lines = [
+                        f"Delete ALL {len(empty)} empty folder(s)?",
+                        "",
+                        "This cannot be undone!",
+                        "",
+                        "Press 'y' to confirm, any other key to cancel"
+                    ]
+                    
+                    self.show_message_box("DELETE ALL EMPTY", confirm_lines, wait_for_key=False)
+                    confirm_key = self.stdscr.getch()
+                    
+                    if confirm_key in [ord('y'), ord('Y')]:
+                        deleted_count = 0
+                        error_count = 0
+                        
+                        for folder in list(empty):
+                            try:
+                                shutil.rmtree(folder['path'])
+                                deleted_count += 1
+                                marked_folders.discard(folder['path'])
+                                all_folders.remove(folder)
+                                empty.remove(folder)
+                            except Exception as e:
+                                error_count += 1
+                        
+                        self.message = f"Deleted {deleted_count} empty folder(s)"
+                        if error_count:
+                            self.message += f", {error_count} error(s)"
+                        self.message_color = curses.COLOR_GREEN if error_count == 0 else curses.COLOR_YELLOW
+                        
+                        # Adjust selection
+                        if selected >= len(all_folders):
+                            selected = max(0, len(all_folders) - 1)
+                        if not all_folders:
+                            self.load_directory()
+                            break
+                else:
+                    self.show_message_box("NO EMPTY FOLDERS", ["No empty folders to delete"])
+            elif key == ord('N'):
+                # Delete ALL near-empty folders
+                if near_empty:
+                    confirm_lines = [
+                        f"Delete ALL {len(near_empty)} near-empty folder(s)?",
+                        "",
+                        "These folders contain files < 10MB each!",
+                        "This cannot be undone!",
+                        "",
+                        "Press 'y' to confirm, any other key to cancel"
+                    ]
+                    
+                    self.show_message_box("DELETE ALL NEAR-EMPTY", confirm_lines, wait_for_key=False)
+                    confirm_key = self.stdscr.getch()
+                    
+                    if confirm_key in [ord('y'), ord('Y')]:
+                        deleted_count = 0
+                        error_count = 0
+                        
+                        for folder in list(near_empty):
+                            try:
+                                shutil.rmtree(folder['path'])
+                                deleted_count += 1
+                                marked_folders.discard(folder['path'])
+                                all_folders.remove(folder)
+                                near_empty.remove(folder)
+                            except Exception as e:
+                                error_count += 1
+                        
+                        self.message = f"Deleted {deleted_count} near-empty folder(s)"
+                        if error_count:
+                            self.message += f", {error_count} error(s)"
+                        self.message_color = curses.COLOR_GREEN if error_count == 0 else curses.COLOR_YELLOW
+                        
+                        # Adjust selection
+                        if selected >= len(all_folders):
+                            selected = max(0, len(all_folders) - 1)
+                        if not all_folders:
+                            self.load_directory()
+                            break
+                else:
+                    self.show_message_box("NO NEAR-EMPTY FOLDERS", ["No near-empty folders to delete"])
             elif key == ord('q'):
+                self.load_directory()
                 break
     
     def toggle_mark(self):
