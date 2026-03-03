@@ -1618,29 +1618,365 @@ class FileManager:
                 self.message_color = curses.COLOR_RED
         
         elif key == ord('d'):
-            name = self.get_text_input("New folder name: ")
-            if not name:
-                self.message = "Cancelled"
-                self.message_color = curses.COLOR_YELLOW
-                return
-            
-            new_path = self.current_dir / name
-            if new_path.exists():
-                self.message = f"'{name}' already exists"
-                self.message_color = curses.COLOR_RED
-                return
-            
-            try:
-                new_path.mkdir(parents=True)
-                self.message = f"Created folder: {name}"
-                self.message_color = curses.COLOR_GREEN
-                self.load_directory()
-            except Exception as e:
-                self.message = f"Error: {e}"
-                self.message_color = curses.COLOR_RED
+            # Show folder creation menu
+            self.show_create_folder_menu()
+        
         else:
             self.message = "Cancelled"
             self.message_color = curses.COLOR_YELLOW
+    
+    def show_create_folder_menu(self):
+        """Show menu for folder creation options"""
+        height, width = self.stdscr.getmaxyx()
+        
+        menu_items = [
+            ("1", "Create folder in current directory", "current"),
+            ("2", "Create folder in different directory", "different"),
+            ("3", "Create folder structure", "structure"),
+        ]
+        
+        # Draw menu
+        menu_width = 45
+        menu_height = len(menu_items) + 6
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+        
+        # Draw box
+        self.stdscr.attron(curses.color_pair(7))
+        self.stdscr.addstr(start_y, start_x, "╔" + "═" * (menu_width - 2) + "╗")
+        self.stdscr.addstr(start_y + 1, start_x, "║" + " CREATE FOLDER ".center(menu_width - 2) + "║")
+        self.stdscr.addstr(start_y + 2, start_x, "╠" + "═" * (menu_width - 2) + "╣")
+        self.stdscr.attroff(curses.color_pair(7))
+        
+        for i, (key, label, action) in enumerate(menu_items):
+            y = start_y + 3 + i
+            self.stdscr.addstr(y, start_x, "║", curses.color_pair(7))
+            self.stdscr.addstr(y, start_x + 2, f"[{key}] {label}"[:menu_width-4], curses.color_pair(11))
+            self.stdscr.addstr(y, start_x + menu_width - 1, "║", curses.color_pair(7))
+        
+        self.stdscr.attron(curses.color_pair(7))
+        self.stdscr.addstr(start_y + 3 + len(menu_items), start_x, "╠" + "═" * (menu_width - 2) + "╣")
+        self.stdscr.addstr(start_y + 4 + len(menu_items), start_x, "║" + " [q] Cancel ".center(menu_width - 2) + "║")
+        self.stdscr.addstr(start_y + 5 + len(menu_items), start_x, "╚" + "═" * (menu_width - 2) + "╝")
+        self.stdscr.attroff(curses.color_pair(7))
+        
+        self.stdscr.refresh()
+        
+        # Get selection
+        key = self.stdscr.getch()
+        
+        if key == ord('1'):
+            self.create_folder_current()
+        elif key == ord('2'):
+            self.create_folder_different()
+        elif key == ord('3'):
+            self.create_folder_structure()
+    
+    def create_folder_current(self):
+        """Create a folder in the current directory"""
+        name = self.get_text_input("New folder name: ")
+        if not name:
+            self.message = "Cancelled"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        new_path = self.current_dir / name
+        if new_path.exists():
+            self.message = f"'{name}' already exists"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        try:
+            new_path.mkdir(parents=True)
+            self.message = f"Created folder: {name}"
+            self.message_color = curses.COLOR_GREEN
+            self.load_directory()
+        except Exception as e:
+            self.message = f"Error: {e}"
+            self.message_color = curses.COLOR_RED
+    
+    def create_folder_different(self):
+        """Create a folder in a specified directory"""
+        # Get the target directory
+        target_dir = self.get_text_input("Target directory path: ", str(self.current_dir))
+        if not target_dir:
+            self.message = "Cancelled"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        target_path = Path(target_dir)
+        if not target_path.exists():
+            self.message = f"Directory '{target_dir}' does not exist"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        if not target_path.is_dir():
+            self.message = f"'{target_dir}' is not a directory"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        # Get the new folder name
+        name = self.get_text_input("New folder name: ")
+        if not name:
+            self.message = "Cancelled"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        new_path = target_path / name
+        if new_path.exists():
+            self.message = f"'{name}' already exists in target directory"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        try:
+            new_path.mkdir(parents=True)
+            self.message = f"Created folder: {new_path}"
+            self.message_color = curses.COLOR_GREEN
+            # Ask if user wants to navigate to the new folder
+            height, width = self.stdscr.getmaxyx()
+            self.stdscr.addstr(height - 1, 1, "Navigate to new folder? (y/n) ", curses.color_pair(11) | curses.A_BOLD)
+            self.stdscr.refresh()
+            key = self.stdscr.getch()
+            if key in [ord('y'), ord('Y')]:
+                self.change_directory(new_path)
+            else:
+                self.load_directory()
+        except Exception as e:
+            self.message = f"Error: {e}"
+            self.message_color = curses.COLOR_RED
+    
+    def create_folder_structure(self):
+        """Create a folder structure interactively"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Get the base directory for the structure
+        base_dir = self.get_text_input("Base directory (Enter for current): ", str(self.current_dir))
+        if not base_dir:
+            base_dir = str(self.current_dir)
+        
+        base_path = Path(base_dir)
+        if not base_path.exists():
+            self.message = f"Directory '{base_dir}' does not exist"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        # Initialize the folder structure
+        # Structure format: list of tuples (name, depth, parent_index)
+        # where parent_index is the index of the parent folder in the list, -1 for root
+        folder_structure = []  # List of (name, depth, parent_index)
+        
+        # Get the root folder name
+        root_name = self.get_text_input("Root folder name: ")
+        if not root_name:
+            self.message = "Cancelled"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        folder_structure.append((root_name, 0, -1))
+        
+        # Interactive structure building
+        while True:
+            # Draw current structure
+            self.stdscr.clear()
+            
+            # Title
+            title = " CREATE FOLDER STRUCTURE "
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            
+            # Base path info
+            self.stdscr.addstr(2, 2, f"Base: {base_path}", curses.color_pair(11))
+            self.stdscr.addstr(3, 0, "─" * width)
+            
+            # Draw folder structure preview
+            self.stdscr.addstr(4, 2, "Structure Preview:", curses.color_pair(11) | curses.A_BOLD)
+            
+            current_y = 5
+            for i, (name, depth, parent_idx) in enumerate(folder_structure):
+                if current_y >= height - 8:
+                    self.stdscr.addstr(current_y, 2, f"... and {len(folder_structure) - i} more folders", curses.color_pair(6))
+                    break
+                
+                indent = "  " * depth + ("└─ " if depth > 0 else "📁 ")
+                display = f"{indent}{name}/"
+                color = curses.color_pair(1) if depth == 0 else curses.color_pair(11)
+                self.stdscr.addstr(current_y, 4, display[:width-6], color)
+                current_y += 1
+            
+            # Menu options
+            self.stdscr.addstr(height - 7, 0, "─" * width)
+            self.stdscr.addstr(height - 6, 2, "Options:", curses.color_pair(11) | curses.A_BOLD)
+            self.stdscr.addstr(height - 5, 4, "[a] Add child to root folder", curses.color_pair(6))
+            self.stdscr.addstr(height - 4, 4, "[s] Add child to specific folder", curses.color_pair(6))
+            self.stdscr.addstr(height - 3, 4, "[c] Create structure  [q] Cancel", curses.color_pair(6))
+            
+            # Show folder count
+            self.stdscr.addstr(height - 2, 2, f"Total folders: {len(folder_structure)}", curses.color_pair(8))
+            
+            self.stdscr.refresh()
+            
+            key = self.stdscr.getch()
+            
+            if key == ord('a'):
+                # Add child to root folder
+                child_name = self.get_text_input("Child folder name: ")
+                if child_name:
+                    folder_structure.append((child_name, 1, 0))
+                    
+            elif key == ord('s'):
+                # Select a folder to add a child to
+                parent_idx = self.select_parent_folder(folder_structure)
+                if parent_idx is not None:
+                    child_name = self.get_text_input("Child folder name: ")
+                    if child_name:
+                        parent_depth = folder_structure[parent_idx][1]
+                        folder_structure.append((child_name, parent_depth + 1, parent_idx))
+                        
+            elif key == ord('c'):
+                # Create the structure
+                if self.confirm_folder_structure(folder_structure, base_path):
+                    created_count, errors = self.execute_folder_structure(folder_structure, base_path)
+                    if errors:
+                        self.message = f"Created {created_count} folder(s) with {len(errors)} error(s)"
+                        self.message_color = curses.COLOR_YELLOW
+                    else:
+                        self.message = f"Created {created_count} folder(s) successfully"
+                        self.message_color = curses.COLOR_GREEN
+                    self.load_directory()
+                    return
+                    
+            elif key == ord('q') or key == 27:
+                self.message = "Folder structure creation cancelled"
+                self.message_color = curses.COLOR_YELLOW
+                return
+    
+    def select_parent_folder(self, folder_structure):
+        """Show a selection menu to choose a parent folder"""
+        height, width = self.stdscr.getmaxyx()
+        selected = 0
+        scroll_offset = 0
+        
+        while True:
+            self.stdscr.clear()
+            
+            # Title
+            title = " SELECT PARENT FOLDER "
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            
+            self.stdscr.addstr(2, 2, "Use ↑/↓ to navigate, Enter to select, q to cancel", curses.color_pair(11))
+            self.stdscr.addstr(3, 0, "─" * width)
+            
+            # Visible rows
+            visible_rows = height - 6
+            
+            # Adjust scroll offset
+            if selected < scroll_offset:
+                scroll_offset = selected
+            elif selected >= scroll_offset + visible_rows:
+                scroll_offset = selected - visible_rows + 1
+            
+            # Draw folder list
+            start_y = 4
+            for i in range(scroll_offset, min(scroll_offset + visible_rows, len(folder_structure))):
+                name, depth, parent_idx = folder_structure[i]
+                indent = "  " * depth + ("└─ " if depth > 0 else "📁 ")
+                display = f"{indent}{name}/"
+                
+                if i == selected:
+                    self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+                    self.stdscr.addstr(start_y + i - scroll_offset, 2, f"► {display}"[:width-4])
+                    self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+                else:
+                    color = curses.color_pair(1) if depth == 0 else curses.color_pair(11)
+                    self.stdscr.addstr(start_y + i - scroll_offset, 2, f"  {display}"[:width-4], color)
+            
+            self.stdscr.refresh()
+            
+            key = self.stdscr.getch()
+            
+            if key == curses.KEY_UP:
+                selected = max(0, selected - 1)
+            elif key == curses.KEY_DOWN:
+                selected = min(len(folder_structure) - 1, selected + 1)
+            elif key in [ord('\n'), curses.KEY_ENTER, 10, 13]:
+                return selected
+            elif key == ord('q') or key == 27:
+                return None
+    
+    def confirm_folder_structure(self, folder_structure, base_path):
+        """Show confirmation dialog for folder structure"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Build full paths for preview
+        paths = self.build_folder_paths(folder_structure, base_path)
+        
+        self.stdscr.clear()
+        
+        # Title
+        title = " CONFIRM FOLDER CREATION "
+        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+        self.stdscr.addstr(0, 0, title.center(width)[:width])
+        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        
+        self.stdscr.addstr(2, 2, f"The following {len(paths)} folder(s) will be created:", curses.color_pair(11))
+        self.stdscr.addstr(3, 0, "─" * width)
+        
+        # Show paths
+        current_y = 4
+        max_display = height - 8
+        for i, path in enumerate(paths):
+            if i >= max_display:
+                self.stdscr.addstr(current_y, 4, f"... and {len(paths) - i} more", curses.color_pair(6))
+                break
+            path_str = str(path)
+            if len(path_str) > width - 8:
+                path_str = "..." + path_str[-(width-11):]
+            self.stdscr.addstr(current_y, 4, path_str, curses.color_pair(1))
+            current_y += 1
+        
+        # Confirmation prompt
+        self.stdscr.addstr(height - 3, 2, "Create these folders? (y/n)", curses.color_pair(10) | curses.A_BOLD)
+        self.stdscr.refresh()
+        
+        key = self.stdscr.getch()
+        return key in [ord('y'), ord('Y')]
+    
+    def build_folder_paths(self, folder_structure, base_path):
+        """Build list of full paths from folder structure"""
+        paths = []
+        path_map = {}  # Map from index to full path
+        
+        for i, (name, depth, parent_idx) in enumerate(folder_structure):
+            if parent_idx == -1:
+                # Root folder
+                full_path = base_path / name
+            else:
+                # Child folder
+                parent_path = path_map[parent_idx]
+                full_path = parent_path / name
+            
+            path_map[i] = full_path
+            paths.append(full_path)
+        
+        return paths
+    
+    def execute_folder_structure(self, folder_structure, base_path):
+        """Create all folders in the structure"""
+        paths = self.build_folder_paths(folder_structure, base_path)
+        created = 0
+        errors = []
+        
+        for path in paths:
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                created += 1
+            except Exception as e:
+                errors.append((path, str(e)))
+        
+        return created, errors
     
     def rename_item(self):
         """Rename current file or folder"""
