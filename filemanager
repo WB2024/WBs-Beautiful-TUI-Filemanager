@@ -2151,17 +2151,19 @@ class FileManager:
         """Show tools menu for audio conversion and extraction"""
         height, width = self.stdscr.getmaxyx()
         
-        # Count audio files and archives in current directory
+        # Count audio files, images, and archives in current directory
         audio_count = sum(1 for e in self.entries if not e['is_dir'] and self.is_audio_file(e['path']))
+        image_count = sum(1 for e in self.entries if not e['is_dir'] and self.is_image_file(e['path']))
         archive_exts = {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz', '.txz', '.rar', '.7z'}
         archive_count = sum(1 for e in self.entries if not e['is_dir'] and 
                           Path(e['path']).suffix.lower() in archive_exts)
         
         menu_items = [
             ("1", f"Convert Audio to FLAC ({audio_count} files)", "convert_flac"),
-            ("2", f"Extract Archives ({archive_count} archives)", "extract"),
-            ("3", f"Extract & Convert ({archive_count} archives)", "extract_convert"),
-            ("4", "Fix Permissions (777 recursive)", "fix_perms"),
+            ("2", f"Convert Images ({image_count} files)", "convert_images"),
+            ("3", f"Extract Archives ({archive_count} archives)", "extract"),
+            ("4", f"Extract & Convert ({archive_count} archives)", "extract_convert"),
+            ("5", "Fix Permissions (777 recursive)", "fix_perms"),
         ]
         
         # Draw menu
@@ -2197,11 +2199,83 @@ class FileManager:
         if key == ord('1'):
             self.run_audio_to_flac()
         elif key == ord('2'):
-            self.extract_archives()
+            self.run_image_convert()
         elif key == ord('3'):
-            self.run_extract_and_convert()
+            self.extract_archives()
         elif key == ord('4'):
+            self.run_extract_and_convert()
+        elif key == ord('5'):
             self.fix_permissions()
+    
+    def run_image_convert(self):
+        """Run image-convert in current directory"""
+        # Check if image-convert is available
+        image_convert_path = shutil.which('image-convert')
+        if not image_convert_path:
+            self.message = "image-convert not found in PATH"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        # Count image files
+        image_count = sum(1 for e in self.entries if not e['is_dir'] and self.is_image_file(e['path']))
+        
+        if image_count == 0:
+            self.message = "No image files found in current directory"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        # Exit curses temporarily to run the tool
+        curses.endwin()
+        
+        try:
+            # Change to current directory and run
+            original_dir = os.getcwd()
+            os.chdir(self.current_dir)
+            
+            print(f"\n{'='*70}")
+            print(f"Running image-convert in: {self.current_dir}")
+            print(f"{'='*70}\n")
+            
+            subprocess.run(['image-convert'], check=False)
+            
+            print(f"\n{'='*70}")
+            print("Press Enter to return to file manager...")
+            print(f"{'='*70}")
+            input()
+            
+            os.chdir(original_dir)
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            print("Press Enter to continue...")
+            input()
+        
+        # Restore curses
+        self.stdscr = curses.initscr()
+        curses.start_color()
+        curses.use_default_colors()
+        curses.noecho()
+        curses.cbreak()
+        curses.curs_set(0)
+        self.stdscr.keypad(True)
+        
+        # Reinitialize color pairs
+        curses.init_pair(1, curses.COLOR_CYAN, -1)
+        curses.init_pair(2, curses.COLOR_GREEN, -1)
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(5, curses.COLOR_RED, -1)
+        curses.init_pair(6, curses.COLOR_WHITE, -1)
+        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        curses.init_pair(8, curses.COLOR_GREEN, -1)
+        curses.init_pair(9, curses.COLOR_RED, -1)
+        curses.init_pair(10, curses.COLOR_YELLOW, -1)
+        curses.init_pair(11, curses.COLOR_BLUE, -1)
+        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+        
+        self.load_directory()
+        self.message = "Image conversion complete"
+        self.message_color = curses.COLOR_GREEN
     
     def run_audio_to_flac(self):
         """Run audio-to-flac converter in current directory"""

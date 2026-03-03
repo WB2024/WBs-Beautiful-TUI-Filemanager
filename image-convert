@@ -1,0 +1,494 @@
+#!/usr/bin/env python3
+"""
+Image Converter
+Convert images between formats using ImageMagick
+"""
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+class ImageConverter:
+    def __init__(self):
+        self.current_dir = os.getcwd()
+        self.image_extensions = [
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif',
+            '.webp', '.heic', '.heif', '.avif', '.ico', '.svg',
+            '.raw', '.cr2', '.nef', '.arw', '.dng', '.psd', '.xcf'
+        ]
+        
+        # Output format options
+        self.output_formats = {
+            'jpg': {'name': 'JPEG', 'ext': '.jpg', 'desc': 'Best for photos, small file size'},
+            'png': {'name': 'PNG', 'ext': '.png', 'desc': 'Lossless, supports transparency'},
+            'webp': {'name': 'WebP', 'ext': '.webp', 'desc': 'Modern format, excellent compression'},
+            'gif': {'name': 'GIF', 'ext': '.gif', 'desc': '256 colors, supports animation'},
+            'bmp': {'name': 'BMP', 'ext': '.bmp', 'desc': 'Uncompressed bitmap'},
+            'tiff': {'name': 'TIFF', 'ext': '.tiff', 'desc': 'High quality, large files'},
+            'avif': {'name': 'AVIF', 'ext': '.avif', 'desc': 'Next-gen format, best compression'},
+        }
+        
+        self.files_found = []
+        self.files_to_convert = []
+        self.conversion_stats = {
+            'success': [],
+            'skipped': [],
+            'errors': []
+        }
+        
+    def print_header(self, text):
+        """Print a formatted header"""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{text.center(70)}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
+    
+    def print_success(self, text):
+        """Print success message"""
+        print(f"{Colors.OKGREEN}✓ {text}{Colors.ENDC}")
+    
+    def print_error(self, text):
+        """Print error message"""
+        print(f"{Colors.FAIL}✗ {text}{Colors.ENDC}")
+    
+    def print_info(self, text):
+        """Print info message"""
+        print(f"{Colors.OKCYAN}ℹ {text}{Colors.ENDC}")
+    
+    def print_warning(self, text):
+        """Print warning message"""
+        print(f"{Colors.WARNING}⚠ {text}{Colors.ENDC}")
+    
+    def run_command(self, command, capture_output=True):
+        """Run a shell command"""
+        try:
+            if capture_output:
+                result = subprocess.run(command, shell=True, capture_output=True, text=True)
+                return result.returncode, result.stdout, result.stderr
+            else:
+                result = subprocess.run(command, shell=True)
+                return result.returncode, None, None
+        except Exception as e:
+            return 1, None, str(e)
+    
+    def yes_no_prompt(self, question, default=True):
+        """Ask a yes/no question"""
+        default_text = "Y/n" if default else "y/N"
+        while True:
+            response = input(f"{Colors.OKBLUE}{question} ({default_text}): {Colors.ENDC}").lower().strip()
+            if response == '':
+                return default
+            if response in ['y', 'yes']:
+                return True
+            elif response in ['n', 'no']:
+                return False
+            else:
+                self.print_warning("Please answer 'y' or 'n'")
+    
+    def fix_permissions(self, path):
+        """Set permissions to 777 for a file"""
+        try:
+            os.chmod(path, 0o777)
+            return True
+        except Exception as e:
+            self.print_warning(f"Could not set permissions for {path}: {e}")
+            return False
+    
+    def check_magick(self):
+        """Check if ImageMagick is installed"""
+        returncode, stdout, stderr = self.run_command("magick --version")
+        if returncode == 0:
+            return True
+        
+        # Try alternative command (older ImageMagick)
+        returncode, stdout, stderr = self.run_command("convert --version")
+        if returncode == 0:
+            return True
+        
+        return False
+    
+    def get_magick_command(self):
+        """Get the correct magick command"""
+        returncode, _, _ = self.run_command("magick --version")
+        if returncode == 0:
+            return "magick"
+        return "convert"
+    
+    def scan_directory(self):
+        """Scan current directory for image files"""
+        self.print_header("Scanning Current Directory")
+        self.print_info(f"Directory: {self.current_dir}")
+        
+        self.files_found = []
+        
+        for ext in self.image_extensions:
+            # Case insensitive search
+            for filepath in Path(self.current_dir).glob(f"*{ext}"):
+                if filepath.is_file():
+                    self.files_found.append(str(filepath))
+            for filepath in Path(self.current_dir).glob(f"*{ext.upper()}"):
+                if filepath.is_file() and str(filepath) not in self.files_found:
+                    self.files_found.append(str(filepath))
+        
+        if not self.files_found:
+            self.print_warning("No image files found in current directory")
+            return False
+        
+        # Sort files
+        self.files_found.sort()
+        
+        self.print_success(f"Found {len(self.files_found)} image file(s)")
+        
+        # List files
+        print(f"\n{Colors.BOLD}Images found:{Colors.ENDC}\n")
+        for i, filepath in enumerate(self.files_found, 1):
+            filename = os.path.basename(filepath)
+            ext = Path(filepath).suffix.lower()
+            size = os.path.getsize(filepath)
+            size_str = self.format_size(size)
+            print(f"  {Colors.OKCYAN}{i:3}.{Colors.ENDC} {filename} {Colors.WARNING}({size_str}){Colors.ENDC}")
+        
+        return True
+    
+    def format_size(self, size_bytes):
+        """Format file size to human readable"""
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        elif size_bytes < 1024 * 1024 * 1024:
+            return f"{size_bytes / 1024 / 1024:.1f} MB"
+        else:
+            return f"{size_bytes / 1024 / 1024 / 1024:.1f} GB"
+    
+    def select_files(self):
+        """Let user select which files to convert"""
+        print(f"\n{Colors.BOLD}Select files to convert:{Colors.ENDC}")
+        print(f"  {Colors.OKCYAN}[a]{Colors.ENDC} All files")
+        print(f"  {Colors.OKCYAN}[s]{Colors.ENDC} Select specific files")
+        print(f"  {Colors.OKCYAN}[q]{Colors.ENDC} Cancel")
+        
+        while True:
+            choice = input(f"\n{Colors.OKBLUE}Your choice [a]: {Colors.ENDC}").lower().strip()
+            
+            if choice == '' or choice == 'a':
+                self.files_to_convert = self.files_found.copy()
+                self.print_success(f"Selected all {len(self.files_to_convert)} files")
+                return True
+            
+            elif choice == 's':
+                return self.select_specific_files()
+            
+            elif choice == 'q':
+                return False
+            
+            else:
+                self.print_warning("Invalid choice. Please enter 'a', 's', or 'q'")
+    
+    def select_specific_files(self):
+        """Let user select specific files by number"""
+        print(f"\n{Colors.BOLD}Enter file numbers to convert (comma-separated, e.g., 1,3,5-8):{Colors.ENDC}")
+        
+        while True:
+            selection = input(f"{Colors.OKBLUE}Selection: {Colors.ENDC}").strip()
+            
+            if not selection:
+                self.print_warning("No selection made")
+                continue
+            
+            try:
+                indices = self.parse_selection(selection)
+                
+                if not indices:
+                    self.print_warning("No valid files selected")
+                    continue
+                
+                self.files_to_convert = [self.files_found[i-1] for i in indices if 1 <= i <= len(self.files_found)]
+                
+                if not self.files_to_convert:
+                    self.print_warning("No valid files in selection")
+                    continue
+                
+                self.print_success(f"Selected {len(self.files_to_convert)} file(s)")
+                
+                # Show selected files
+                for filepath in self.files_to_convert:
+                    print(f"  • {os.path.basename(filepath)}")
+                
+                return True
+                
+            except Exception as e:
+                self.print_error(f"Invalid selection: {e}")
+    
+    def parse_selection(self, selection):
+        """Parse selection string like '1,3,5-8' into list of indices"""
+        indices = set()
+        
+        parts = selection.replace(' ', '').split(',')
+        
+        for part in parts:
+            if '-' in part:
+                # Range like 5-8
+                try:
+                    start, end = part.split('-')
+                    start = int(start)
+                    end = int(end)
+                    indices.update(range(start, end + 1))
+                except:
+                    pass
+            else:
+                # Single number
+                try:
+                    indices.add(int(part))
+                except:
+                    pass
+        
+        return sorted(indices)
+    
+    def select_output_format(self):
+        """Let user select output format"""
+        print(f"\n{Colors.BOLD}Select output format:{Colors.ENDC}\n")
+        
+        formats = list(self.output_formats.keys())
+        
+        for i, fmt in enumerate(formats, 1):
+            info = self.output_formats[fmt]
+            default_marker = " (default)" if fmt == 'jpg' else ""
+            print(f"  {Colors.OKCYAN}[{i}]{Colors.ENDC} {info['name']} ({info['ext']}) - {info['desc']}{Colors.OKGREEN}{default_marker}{Colors.ENDC}")
+        
+        while True:
+            choice = input(f"\n{Colors.OKBLUE}Select format [1]: {Colors.ENDC}").strip()
+            
+            if choice == '':
+                return 'jpg'
+            
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(formats):
+                    selected = formats[idx]
+                    self.print_success(f"Output format: {self.output_formats[selected]['name']}")
+                    return selected
+                else:
+                    self.print_warning(f"Please enter a number between 1 and {len(formats)}")
+            except ValueError:
+                # Check if they typed the format name
+                if choice.lower() in self.output_formats:
+                    return choice.lower()
+                self.print_warning("Please enter a valid number")
+    
+    def get_conversion_options(self):
+        """Get user preferences for conversion"""
+        self.print_header("Conversion Options")
+        
+        options = {}
+        
+        # Output format
+        options['format'] = self.select_output_format()
+        
+        # Quality (for lossy formats)
+        if options['format'] in ['jpg', 'webp', 'avif']:
+            print(f"\n{Colors.BOLD}Quality Setting (1-100):{Colors.ENDC}")
+            print("  Lower = smaller file, worse quality")
+            print("  Higher = larger file, better quality")
+            print("  Recommended: 85-95")
+            
+            while True:
+                try:
+                    quality = input(f"{Colors.OKBLUE}Quality [90]: {Colors.ENDC}").strip()
+                    if quality == '':
+                        options['quality'] = 90
+                        break
+                    quality = int(quality)
+                    if 1 <= quality <= 100:
+                        options['quality'] = quality
+                        break
+                    else:
+                        self.print_warning("Please enter a number between 1 and 100")
+                except ValueError:
+                    self.print_warning("Please enter a valid number")
+        else:
+            options['quality'] = None
+        
+        # Delete originals
+        options['delete_originals'] = self.yes_no_prompt("\n⚠️  Delete original files after successful conversion?", default=False)
+        
+        if options['delete_originals']:
+            self.print_warning("Original files will be PERMANENTLY DELETED after conversion!")
+            if not self.yes_no_prompt("Are you absolutely sure?", default=False):
+                options['delete_originals'] = False
+                self.print_info("Original files will be kept")
+        
+        # Fix permissions
+        options['fix_permissions'] = self.yes_no_prompt("\nSet output files to 777 permissions?", default=True)
+        
+        return options
+    
+    def convert_file(self, filepath, options, magick_cmd):
+        """Convert a single file"""
+        filename = os.path.basename(filepath)
+        base_name = os.path.splitext(filename)[0]
+        
+        input_ext = Path(filepath).suffix.lower()
+        output_ext = self.output_formats[options['format']]['ext']
+        
+        # Skip if already in target format
+        if input_ext == output_ext or (input_ext == '.jpeg' and output_ext == '.jpg'):
+            self.print_warning(f"Skipping {filename} - already in {options['format'].upper()} format")
+            self.conversion_stats['skipped'].append(filename)
+            return True
+        
+        # Create output path
+        output_path = os.path.join(self.current_dir, f"{base_name}{output_ext}")
+        
+        # Handle name collision
+        if os.path.exists(output_path) and output_path != filepath:
+            counter = 1
+            while os.path.exists(output_path):
+                output_path = os.path.join(self.current_dir, f"{base_name}_{counter}{output_ext}")
+                counter += 1
+        
+        # Build magick command
+        cmd_parts = [magick_cmd, f'"{filepath}"']
+        
+        # Add quality setting for lossy formats
+        if options['quality']:
+            cmd_parts.extend(['-quality', str(options['quality'])])
+        
+        # Add output file
+        cmd_parts.append(f'"{output_path}"')
+        
+        cmd = ' '.join(cmd_parts)
+        
+        # Execute conversion
+        self.print_info(f"Converting: {filename}")
+        
+        returncode, stdout, stderr = self.run_command(cmd, capture_output=True)
+        
+        if returncode == 0 and os.path.exists(output_path):
+            # Set permissions if requested
+            if options['fix_permissions']:
+                self.fix_permissions(output_path)
+            
+            # Get file sizes
+            input_size = os.path.getsize(filepath)
+            output_size = os.path.getsize(output_path)
+            size_diff = ((output_size - input_size) / input_size) * 100 if input_size > 0 else 0
+            
+            self.print_success(f"Converted: {os.path.basename(output_path)}")
+            print(f"  Input:  {self.format_size(input_size)}")
+            print(f"  Output: {self.format_size(output_size)} ({size_diff:+.1f}%)")
+            
+            # Delete original if requested
+            if options['delete_originals']:
+                try:
+                    os.remove(filepath)
+                    self.print_warning(f"  Deleted original: {filename}")
+                except Exception as e:
+                    self.print_error(f"  Could not delete original: {e}")
+            
+            self.conversion_stats['success'].append(filename)
+            return True
+        else:
+            self.print_error(f"Failed to convert: {filename}")
+            if stderr:
+                print(f"{Colors.FAIL}{stderr[:500]}{Colors.ENDC}")
+            self.conversion_stats['errors'].append(filename)
+            return False
+    
+    def convert_all(self):
+        """Convert all selected files"""
+        if not self.files_to_convert:
+            self.print_warning("No files to convert")
+            return
+        
+        # Get options
+        options = self.get_conversion_options()
+        
+        # Confirm
+        format_name = self.output_formats[options['format']]['name']
+        print(f"\n{Colors.BOLD}Ready to convert {len(self.files_to_convert)} file(s) to {format_name}{Colors.ENDC}")
+        
+        if not self.yes_no_prompt("Proceed with conversion?", default=True):
+            self.print_info("Conversion cancelled")
+            return
+        
+        # Get magick command
+        magick_cmd = self.get_magick_command()
+        
+        # Convert
+        self.print_header(f"Converting {len(self.files_to_convert)} File(s) to {format_name}")
+        
+        for i, filepath in enumerate(self.files_to_convert, 1):
+            print(f"\n{Colors.BOLD}[{i}/{len(self.files_to_convert)}]{Colors.ENDC}")
+            self.convert_file(filepath, options, magick_cmd)
+        
+        # Final summary
+        self.print_header("Conversion Complete")
+        
+        if self.conversion_stats['success']:
+            self.print_success(f"Successfully converted: {len(self.conversion_stats['success'])}")
+        
+        if self.conversion_stats['skipped']:
+            self.print_info(f"Skipped (already in format): {len(self.conversion_stats['skipped'])}")
+        
+        if self.conversion_stats['errors']:
+            self.print_error(f"Failed: {len(self.conversion_stats['errors'])}")
+            for f in self.conversion_stats['errors']:
+                print(f"  • {f}")
+    
+    def run(self):
+        """Main workflow"""
+        self.print_header("Image Converter")
+        
+        # Check for ImageMagick
+        if not self.check_magick():
+            self.print_error("ImageMagick is not installed")
+            self.print_info("Install with:")
+            self.print_info("  Ubuntu/Debian: sudo apt install imagemagick")
+            self.print_info("  macOS: brew install imagemagick")
+            self.print_info("  Windows: https://imagemagick.org/script/download.php")
+            return
+        
+        magick_cmd = self.get_magick_command()
+        self.print_success(f"ImageMagick found (using '{magick_cmd}' command)")
+        
+        # Scan directory
+        if not self.scan_directory():
+            return
+        
+        # Select files
+        if not self.select_files():
+            self.print_info("Operation cancelled")
+            return
+        
+        # Convert
+        self.convert_all()
+
+def main():
+    """Entry point"""
+    try:
+        converter = ImageConverter()
+        converter.run()
+    except KeyboardInterrupt:
+        print(f"\n\n{Colors.WARNING}Operation cancelled by user{Colors.ENDC}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{Colors.FAIL}Unexpected error: {e}{Colors.ENDC}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

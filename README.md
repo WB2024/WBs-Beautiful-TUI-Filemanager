@@ -175,7 +175,16 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 - **Output options** - Same directory or FLAC subdirectory
 - **Standalone or integrated** - Run from command line or file manager
 
-#### 📦➡️🎵 Extract and Convert
+#### �️ Image Converter
+- **Batch image conversion** using ImageMagick
+- **Multiple output formats** - JPG (default), PNG, WebP, GIF, BMP, TIFF, AVIF
+- **Quality control** - Configurable quality for lossy formats (1-100)
+- **File selection** - Convert all images or select specific files
+- **Optional cleanup** - Delete originals after conversion
+- **Permission management** - Sets 777 permissions on output files
+- **Standalone or integrated** - Run from command line or file manager
+
+#### �📦➡️🎵 Extract and Convert
 - **Combined workflow** - Extract archives AND convert audio in one step
 - **Perfect for music archives** - Download, extract, convert to FLAC
 - **Automatic folder detection** - Finds newly extracted directories
@@ -207,6 +216,7 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 - **Linux/Unix** system (tested on Debian/Ubuntu)
 - Terminal with **color support**
 - **ffmpeg/ffprobe** (for audio quality inspection) - Install with: `sudo apt install ffmpeg`
+- **ImageMagick** (for image conversion) - Install with: `sudo apt install imagemagick`
 
 **Note:** All utilities are included in this repository and will be installed along with the file manager.
 
@@ -221,8 +231,8 @@ git clone https://github.com/WB2024/WBs-Beautiful-TUI-Filemanager.git
 cd WBs-Beautiful-TUI-Filemanager
 
 # 2. Copy all utilities to system path
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert
 
 # 3. Run it!
 filemanager
@@ -234,6 +244,7 @@ filemanager
 - `fixperms` - Permission fixing tool (sets 777 recursively)
 - `audio-to-flac` - Audio conversion utility (any format to FLAC)
 - `extract-and-convert` - Combined extract archives + convert audio workflow
+- `image-convert` - Image format conversion utility (using ImageMagick)
 
 ### Manual Installation
 
@@ -244,12 +255,13 @@ wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/fixperms
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/audio-to-flac
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/extract-and-convert
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/image-convert
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert
 
 # 3. Move to PATH
-sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert /usr/local/bin/
 
 # 4. Run from anywhere
 filemanager
@@ -259,7 +271,7 @@ filemanager
 
 ```bash
 # Check if all utilities are installed correctly
-which filemanager extractfile fixperms audio-to-flac extract-and-convert
+which filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert
 
 # Should output:
 # /usr/local/bin/filemanager
@@ -267,6 +279,7 @@ which filemanager extractfile fixperms audio-to-flac extract-and-convert
 # /usr/local/bin/fixperms
 # /usr/local/bin/audio-to-flac
 # /usr/local/bin/extract-and-convert
+# /usr/local/bin/image-convert
 ```
 ## 🔄 Updating
 
@@ -282,8 +295,8 @@ cd /path/to/your/WBs-Beautiful-TUI-Filemanager
 git pull origin main
 
 # 3. Copy updated files to system path (replace old versions)
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert
 
 # 4. Verify the update
 filemanager
@@ -310,7 +323,7 @@ filemanager
 **Note:** Your bookmarks and configuration file (`~/.filemanager_config.json`) will be preserved during updates.
 ## � Included Utilities
 
-This package includes three powerful command-line tools:
+This package includes six powerful command-line tools:
 
 ### 1. `filemanager` - Interactive TUI File Manager
 The main application providing a beautiful terminal-based file browser with built-in text editor, audio quality inspector, and tools for navigation, bookmarks, archive extraction, and folder analysis.
@@ -360,7 +373,56 @@ fixperms /var/www                    # Fix specific directory
 fixperms . nobody:nogroup            # Fix with specific ownership
 sudo fixperms                        # Run with sudo for ownership changes
 ```
+### 4. `audio-to-flac` - Audio Converter
+A standalone utility for converting audio files to FLAC format with intelligent codec detection.
 
+**Features:**
+- Converts any audio format to FLAC
+- Distinguishes lossless vs lossy sources (warns when converting lossy)
+- Configurable compression level (0-8)
+- Preserves metadata and album artwork
+- Optional deletion of original files
+
+**Usage examples:**
+```bash
+audio-to-flac                        # Interactive conversion in current directory
+```
+
+**Dependencies:** `ffmpeg` (`sudo apt install ffmpeg`)
+
+### 5. `extract-and-convert` - Archive to FLAC Workflow
+A combined utility that extracts archives and converts audio to FLAC in one step.
+
+**Features:**
+- Extracts archives, then converts audio in extracted folders
+- Supports all archive formats via `extractfile`
+- Cleanup options for archives and/or original audio
+
+**Usage examples:**
+```bash
+extract-and-convert                  # Process all archives in current directory
+extract-and-convert album.zip        # Process specific archive
+extract-and-convert -d               # Delete original audio after conversion
+extract-and-convert -a               # Delete archive after extraction
+extract-and-convert -da              # Delete both
+```
+
+### 6. `image-convert` - Image Format Converter
+A standalone utility for batch converting images between formats using ImageMagick.
+
+**Features:**
+- Convert to JPG, PNG, WebP, GIF, BMP, TIFF, or AVIF
+- Configurable quality for lossy formats (1-100)
+- Select all images or specific files
+- Optional deletion of original files
+- Sets 777 permissions on output files
+
+**Usage examples:**
+```bash
+image-convert                        # Interactive conversion in current directory
+```
+
+**Dependencies:** ImageMagick (`sudo apt install imagemagick` or `brew install imagemagick`)
 ## �📖 Usage Guide
 
 ### Basic Navigation
@@ -398,7 +460,7 @@ Quit:             q
 | `n` | Create new file or folder |
 | `R` | Rename current file or folder |
 | `o` | Open file operations menu |
-| `t` | Open tools menu (FLAC converter, extract & convert) |
+| `t` | Open tools menu (FLAC, image convert, extract) |
 | `b` | Open bookmarks menu |
 | `p` | Fix permissions (777 recursive) |
 | `e` | Extract archives |
@@ -754,6 +816,41 @@ audio-to-flac
 
 **Supported input formats:**
 M4A, MP3, WAV, AAC, OGG, Opus, WMA, APE, ALAC, AIFF, FLAC (skipped), MKA, MP2, AC3, DTS, TTA, WV, MPC
+
+### Image Converter
+
+**From the file manager:**
+1. Navigate to a folder containing image files
+2. Press `t` to open Tools menu
+3. Select "Convert Images"
+4. Follow interactive prompts
+
+**From command line:**
+```bash
+# Navigate to folder with image files
+cd /path/to/image/files
+
+# Run interactively
+image-convert
+```
+
+**Features:**
+- Scans current directory for image files
+- Select all images or choose specific files
+- Multiple output formats:
+  - **JPG** (default) - Best for photos, small file size
+  - **PNG** - Lossless, supports transparency
+  - **WebP** - Modern format, excellent compression
+  - **GIF** - 256 colors, supports animation
+  - **BMP** - Uncompressed bitmap
+  - **TIFF** - High quality, large files
+  - **AVIF** - Next-gen format, best compression
+- Configurable quality (1-100) for lossy formats
+- Optional deletion of original files
+- Sets 777 permissions on output files
+
+**Supported input formats:**
+JPG, JPEG, PNG, GIF, BMP, TIFF, TIF, WebP, HEIC, HEIF, AVIF, ICO, SVG, RAW, CR2, NEF, ARW, DNG, PSD, XCF
 
 ### Extract and Convert
 
