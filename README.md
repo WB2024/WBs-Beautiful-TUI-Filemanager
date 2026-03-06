@@ -231,8 +231,8 @@ git clone https://github.com/WB2024/WBs-Beautiful-TUI-Filemanager.git
 cd WBs-Beautiful-TUI-Filemanager
 
 # 2. Copy all utilities to system path
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god
 
 # 3. Run it!
 filemanager
@@ -245,6 +245,7 @@ filemanager
 - `audio-to-flac` - Audio conversion utility (any format to FLAC)
 - `extract-and-convert` - Combined extract archives + convert audio workflow
 - `image-convert` - Image format conversion utility (using ImageMagick)
+- `iso2god` - Xbox/Xbox 360 ISO to GOD converter (using iso2god-rs)
 
 ### Manual Installation
 
@@ -256,12 +257,13 @@ wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/audio-to-flac
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/extract-and-convert
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/image-convert
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/iso2god
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god
 
 # 3. Move to PATH
-sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god /usr/local/bin/
 
 # 4. Run from anywhere
 filemanager
@@ -295,8 +297,8 @@ cd /path/to/your/WBs-Beautiful-TUI-Filemanager
 git pull origin main
 
 # 3. Copy updated files to system path (replace old versions)
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god
 
 # 4. Verify the update
 filemanager
@@ -323,7 +325,7 @@ filemanager
 **Note:** Your bookmarks and configuration file (`~/.filemanager_config.json`) will be preserved during updates.
 ## � Included Utilities
 
-This package includes six powerful command-line tools:
+This package includes seven powerful command-line tools:
 
 ### 1. `filemanager` - Interactive TUI File Manager
 The main application providing a beautiful terminal-based file browser with built-in text editor, audio quality inspector, and tools for navigation, bookmarks, archive extraction, and folder analysis.
@@ -423,6 +425,33 @@ image-convert                        # Interactive conversion in current directo
 ```
 
 **Dependencies:** ImageMagick (`sudo apt install imagemagick` or `brew install imagemagick`)
+
+### 7. `iso2god` - Xbox ISO to GOD Converter
+A standalone utility for converting Xbox 360 and original Xbox disc images (ISO) to Games-On-Demand (GOD) format.
+
+**Features:**
+- Convert Xbox 360 and original Xbox ISOs to GOD format
+- Trim unused space from ISO images
+- Set custom game titles
+- Multi-threaded conversion for faster processing
+- Select all ISOs or specific files
+- Optional deletion of original ISO files
+- Sets 777 permissions on output files
+
+**Usage examples:**
+```bash
+iso2god                              # Interactive conversion in current directory
+```
+
+**Dependencies:** iso2god-rs binary from https://github.com/iliazeus/iso2god-rs/releases
+
+**Quick install for iso2god-rs (Linux x86_64):**
+```bash
+wget https://github.com/iliazeus/iso2god-rs/releases/latest/download/iso2god-linux-x86_64
+chmod +x iso2god-linux-x86_64
+sudo mv iso2god-linux-x86_64 /usr/local/bin/iso2god
+```
+
 ## �📖 Usage Guide
 
 ### Basic Navigation

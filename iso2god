@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+"""
+ISO to GOD Converter
+Convert Xbox 360 and original Xbox ISOs into Games-On-Demand (GOD) format
+Uses iso2god-rs: https://github.com/iliazeus/iso2god-rs
+"""
+
+import os
+import subprocess
+import sys
+import shutil
+from pathlib import Path
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+class ISO2GODConverter:
+    def __init__(self):
+        self.current_dir = os.getcwd()
+        self.iso_extensions = ['.iso']
+        
+        self.files_found = []
+        self.files_to_convert = []
+        self.conversion_stats = {
+            'success': [],
+            'skipped': [],
+            'errors': []
+        }
+        
+    def print_header(self, text):
+        """Print a formatted header"""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{text.center(70)}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
+    
+    def print_success(self, text):
+        """Print success message"""
+        print(f"{Colors.OKGREEN}✓ {text}{Colors.ENDC}")
+    
+    def print_error(self, text):
+        """Print error message"""
+        print(f"{Colors.FAIL}✗ {text}{Colors.ENDC}")
+    
+    def print_info(self, text):
+        """Print info message"""
+        print(f"{Colors.OKCYAN}ℹ {text}{Colors.ENDC}")
+    
+    def print_warning(self, text):
+        """Print warning message"""
+        print(f"{Colors.WARNING}⚠ {text}{Colors.ENDC}")
+    
+    def run_command(self, command, capture_output=True):
+        """Run a shell command"""
+        try:
+            if capture_output:
+                result = subprocess.run(command, shell=True, capture_output=True, text=True)
+                return result.returncode, result.stdout, result.stderr
+            else:
+                result = subprocess.run(command, shell=True)
+                return result.returncode, None, None
+        except Exception as e:
+            return 1, None, str(e)
+    
+    def yes_no_prompt(self, question, default=True):
+        """Ask a yes/no question"""
+        default_text = "Y/n" if default else "y/N"
+        while True:
+            response = input(f"{Colors.OKBLUE}{question} ({default_text}): {Colors.ENDC}").lower().strip()
+            if response == '':
+                return default
+            if response in ['y', 'yes']:
+                return True
+            elif response in ['n', 'no']:
+                return False
+            else:
+                self.print_warning("Please answer 'y' or 'n'")
+    
+    def fix_permissions(self, path):
+        """Set permissions to 777 for a file or directory"""
+        try:
+            os.chmod(path, 0o777)
+            return True
+        except Exception as e:
+            self.print_warning(f"Could not set permissions for {path}: {e}")
+            return False
+    
+    def fix_permissions_recursive(self, directory):
+        """Set permissions to 777 recursively for directory and all contents"""
+        try:
+            # Fix the directory itself
+            os.chmod(directory, 0o777)
+            
+            # Fix all files and subdirectories
+            for root, dirs, files in os.walk(directory):
+                for d in dirs:
+                    try:
+                        os.chmod(os.path.join(root, d), 0o777)
+                    except:
+                        pass
+                for f in files:
+                    try:
+                        os.chmod(os.path.join(root, f), 0o777)
+                    except:
+                        pass
+            
+            return True
+        except Exception as e:
+            self.print_warning(f"Could not set permissions recursively: {e}")
+            return False
+    
+    def check_iso2god(self):
+        """Check if iso2god binary is available"""
+        # Check common names for the binary
+        for cmd in ['iso2god', 'iso2god-rs']:
+            if shutil.which(cmd):
+                return cmd
+        return None
+    
+    def format_size(self, size_bytes):
+        """Format file size to human readable"""
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        elif size_bytes < 1024 * 1024 * 1024:
+            return f"{size_bytes / 1024 / 1024:.1f} MB"
+        else:
+            return f"{size_bytes / 1024 / 1024 / 1024:.2f} GB"
+    
+    def get_iso_info(self, filepath, iso2god_cmd):
+        """Get ISO info using iso2god --dry-run"""
+        cmd = f'{iso2god_cmd} --dry-run "{filepath}" /tmp'
+        returncode, stdout, stderr = self.run_command(cmd)
+        
+        info = {
+            'filepath': filepath,
+            'filename': os.path.basename(filepath),
+            'size': os.path.getsize(filepath),
+            'title': 'Unknown',
+            'title_id': 'Unknown',
+            'media_id': 'Unknown',
+        }
+        
+        # Parse output for game info
+        output = stdout if stdout else stderr if stderr else ""
+        
+        for line in output.split('\n'):
+            line = line.strip()
+            if 'title:' in line.lower() or 'name:' in line.lower():
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    info['title'] = parts[1].strip()
+            elif 'title_id' in line.lower() or 'titleid' in line.lower():
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    info['title_id'] = parts[1].strip()
+            elif 'media_id' in line.lower() or 'mediaid' in line.lower():
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    info['media_id'] = parts[1].strip()
+        
+        # If no title found, use filename
+        if info['title'] == 'Unknown':
+            info['title'] = Path(filepath).stem
+        
+        return info
+    
+    def scan_directory(self, iso2god_cmd):
+        """Scan current directory for ISO files"""
+        self.print_header("Scanning Current Directory")
+        self.print_info(f"Directory: {self.current_dir}")
+        
+        self.files_found = []
+        
+        for ext in self.iso_extensions:
+            # Case insensitive search
+            for filepath in Path(self.current_dir).glob(f"*{ext}"):
+                if filepath.is_file():
+                    self.files_found.append(str(filepath))
+            for filepath in Path(self.current_dir).glob(f"*{ext.upper()}"):
+                if filepath.is_file() and str(filepath) not in self.files_found:
+                    self.files_found.append(str(filepath))
+        
+        if not self.files_found:
+            self.print_warning("No ISO files found in current directory")
+            return False
+        
+        # Sort files
+        self.files_found.sort()
+        
+        self.print_success(f"Found {len(self.files_found)} ISO file(s)")
+        
+        # List files with info
+        print(f"\n{Colors.BOLD}ISO files found:{Colors.ENDC}\n")
+        
+        for i, filepath in enumerate(self.files_found, 1):
+            filename = os.path.basename(filepath)
+            size = os.path.getsize(filepath)
+            size_str = self.format_size(size)
+            
+            print(f"  {Colors.OKCYAN}{i:3}.{Colors.ENDC} {filename}")
+            print(f"       {Colors.WARNING}Size: {size_str}{Colors.ENDC}")
+            
+            # Get game info via dry-run
+            self.print_info(f"       Analyzing...")
+            info = self.get_iso_info(filepath, iso2god_cmd)
+            print(f"       {Colors.OKGREEN}Title: {info['title']}{Colors.ENDC}")
+            print()
+        
+        return True
+    
+    def select_files(self):
+        """Let user select which files to convert"""
+        print(f"\n{Colors.BOLD}Select files to convert:{Colors.ENDC}")
+        print(f"  {Colors.OKCYAN}[a]{Colors.ENDC} All ISO files")
+        print(f"  {Colors.OKCYAN}[s]{Colors.ENDC} Select specific files")
+        print(f"  {Colors.OKCYAN}[q]{Colors.ENDC} Cancel")
+        
+        while True:
+            choice = input(f"\n{Colors.OKBLUE}Your choice [a]: {Colors.ENDC}").lower().strip()
+            
+            if choice == '' or choice == 'a':
+                self.files_to_convert = self.files_found.copy()
+                self.print_success(f"Selected all {len(self.files_to_convert)} files")
+                return True
+            
+            elif choice == 's':
+                return self.select_specific_files()
+            
+            elif choice == 'q':
+                return False
+            
+            else:
+                self.print_warning("Invalid choice. Please enter 'a', 's', or 'q'")
+    
+    def select_specific_files(self):
+        """Let user select specific files by number"""
+        print(f"\n{Colors.BOLD}Enter file numbers to convert (comma-separated, e.g., 1,3,5-8):{Colors.ENDC}")
+        
+        while True:
+            selection = input(f"{Colors.OKBLUE}Selection: {Colors.ENDC}").strip()
+            
+            if not selection:
+                self.print_warning("No selection made")
+                continue
+            
+            try:
+                indices = self.parse_selection(selection)
+                
+                if not indices:
+                    self.print_warning("No valid files selected")
+                    continue
+                
+                self.files_to_convert = [self.files_found[i-1] for i in indices if 1 <= i <= len(self.files_found)]
+                
+                if not self.files_to_convert:
+                    self.print_warning("No valid files in selection")
+                    continue
+                
+                self.print_success(f"Selected {len(self.files_to_convert)} file(s)")
+                
+                # Show selected files
+                for filepath in self.files_to_convert:
+                    print(f"  • {os.path.basename(filepath)}")
+                
+                return True
+                
+            except Exception as e:
+                self.print_error(f"Invalid selection: {e}")
+    
+    def parse_selection(self, selection):
+        """Parse selection string like '1,3,5-8' into list of indices"""
+        indices = set()
+        
+        parts = selection.replace(' ', '').split(',')
+        
+        for part in parts:
+            if '-' in part:
+                # Range like 5-8
+                try:
+                    start, end = part.split('-')
+                    start = int(start)
+                    end = int(end)
+                    indices.update(range(start, end + 1))
+                except:
+                    pass
+            else:
+                # Single number
+                try:
+                    indices.add(int(part))
+                except:
+                    pass
+        
+        return sorted(indices)
+    
+    def get_conversion_options(self):
+        """Get user preferences for conversion"""
+        self.print_header("Conversion Options")
+        
+        options = {}
+        
+        # Output directory
+        print(f"{Colors.BOLD}Output Directory:{Colors.ENDC}")
+        print(f"  Default: GOD subdirectory in current folder")
+        
+        output_dir = input(f"{Colors.OKBLUE}Output directory [./GOD]: {Colors.ENDC}").strip()
+        
+        if output_dir == '':
+            options['output_dir'] = os.path.join(self.current_dir, 'GOD')
+        else:
+            if not os.path.isabs(output_dir):
+                output_dir = os.path.join(self.current_dir, output_dir)
+            options['output_dir'] = output_dir
+        
+        self.print_info(f"Output: {options['output_dir']}")
+        
+        # Trim option
+        options['trim'] = self.yes_no_prompt("\nTrim unused space from ISO images?", default=True)
+        
+        # Custom game titles
+        options['custom_titles'] = {}
+        if len(self.files_to_convert) <= 5:
+            if self.yes_no_prompt("\nSet custom game titles?", default=False):
+                for filepath in self.files_to_convert:
+                    filename = os.path.basename(filepath)
+                    title = input(f"{Colors.OKBLUE}Title for '{filename}' (Enter to skip): {Colors.ENDC}").strip()
+                    if title:
+                        options['custom_titles'][filepath] = title
+        
+        # Number of threads
+        print(f"\n{Colors.BOLD}Worker Threads:{Colors.ENDC}")
+        print("  Higher = faster conversion, more CPU usage")
+        print("  Recommended: 2-4 for most systems")
+        
+        while True:
+            try:
+                threads = input(f"{Colors.OKBLUE}Number of threads [4]: {Colors.ENDC}").strip()
+                if threads == '':
+                    options['num_threads'] = 4
+                    break
+                threads = int(threads)
+                if 1 <= threads <= 32:
+                    options['num_threads'] = threads
+                    break
+                else:
+                    self.print_warning("Please enter a number between 1 and 32")
+            except ValueError:
+                self.print_warning("Please enter a valid number")
+        
+        # Delete originals
+        options['delete_originals'] = self.yes_no_prompt("\n⚠️  Delete original ISO files after successful conversion?", default=False)
+        
+        if options['delete_originals']:
+            self.print_warning("Original ISO files will be PERMANENTLY DELETED after conversion!")
+            if not self.yes_no_prompt("Are you absolutely sure?", default=False):
+                options['delete_originals'] = False
+                self.print_info("Original files will be kept")
+        
+        # Fix permissions
+        options['fix_permissions'] = self.yes_no_prompt("\nSet output files to 777 permissions?", default=True)
+        
+        return options
+    
+    def convert_file(self, filepath, options, iso2god_cmd):
+        """Convert a single ISO file to GOD format"""
+        filename = os.path.basename(filepath)
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(options['output_dir'], exist_ok=True)
+        
+        # Build iso2god command
+        cmd_parts = [iso2god_cmd]
+        
+        # Add trim option
+        if options['trim']:
+            cmd_parts.append('--trim')
+        
+        # Add custom title if specified
+        if filepath in options.get('custom_titles', {}):
+            title = options['custom_titles'][filepath]
+            cmd_parts.extend(['--game-title', f'"{title}"'])
+        
+        # Add thread count
+        cmd_parts.extend(['-j', str(options['num_threads'])])
+        
+        # Add source and destination
+        cmd_parts.append(f'"{filepath}"')
+        cmd_parts.append(f'"{options["output_dir"]}"')
+        
+        cmd = ' '.join(cmd_parts)
+        
+        # Execute conversion
+        self.print_info(f"Converting: {filename}")
+        print(f"  {Colors.OKCYAN}Command: {cmd}{Colors.ENDC}")
+        
+        # Run with output visible
+        returncode, stdout, stderr = self.run_command(cmd, capture_output=False)
+        
+        if returncode == 0:
+            self.print_success(f"Converted: {filename}")
+            
+            # Get input file size
+            input_size = os.path.getsize(filepath)
+            print(f"  Input:  {self.format_size(input_size)}")
+            
+            # Delete original if requested
+            if options['delete_originals']:
+                try:
+                    os.remove(filepath)
+                    self.print_warning(f"  Deleted original: {filename}")
+                except Exception as e:
+                    self.print_error(f"  Could not delete original: {e}")
+            
+            self.conversion_stats['success'].append(filename)
+            return True
+        else:
+            self.print_error(f"Failed to convert: {filename}")
+            if stderr:
+                print(f"{Colors.FAIL}{stderr[:500]}{Colors.ENDC}")
+            self.conversion_stats['errors'].append(filename)
+            return False
+    
+    def convert_all(self, iso2god_cmd):
+        """Convert all selected files"""
+        if not self.files_to_convert:
+            self.print_warning("No files to convert")
+            return
+        
+        # Get options
+        options = self.get_conversion_options()
+        
+        # Confirm
+        print(f"\n{Colors.BOLD}Ready to convert {len(self.files_to_convert)} ISO file(s) to GOD format{Colors.ENDC}")
+        print(f"  Output: {options['output_dir']}")
+        print(f"  Trim: {'Yes' if options['trim'] else 'No'}")
+        print(f"  Threads: {options['num_threads']}")
+        
+        if not self.yes_no_prompt("\nProceed with conversion?", default=True):
+            self.print_info("Conversion cancelled")
+            return
+        
+        # Convert
+        self.print_header(f"Converting {len(self.files_to_convert)} ISO File(s)")
+        
+        for i, filepath in enumerate(self.files_to_convert, 1):
+            print(f"\n{Colors.BOLD}[{i}/{len(self.files_to_convert)}]{Colors.ENDC}")
+            self.convert_file(filepath, options, iso2god_cmd)
+        
+        # Fix permissions on output directory
+        if options.get('fix_permissions') and os.path.exists(options['output_dir']):
+            self.print_info("\nApplying permissions fix to output directory...")
+            if self.fix_permissions_recursive(options['output_dir']):
+                self.print_success("All permissions set to 777")
+        
+        # Final summary
+        self.print_header("Conversion Complete")
+        
+        if self.conversion_stats['success']:
+            self.print_success(f"Successfully converted: {len(self.conversion_stats['success'])}")
+            for f in self.conversion_stats['success']:
+                print(f"  • {f}")
+        
+        if self.conversion_stats['errors']:
+            self.print_error(f"\nFailed: {len(self.conversion_stats['errors'])}")
+            for f in self.conversion_stats['errors']:
+                print(f"  • {f}")
+        
+        print(f"\n{Colors.OKGREEN}Output directory: {options['output_dir']}{Colors.ENDC}")
+    
+    def run(self):
+        """Main workflow"""
+        self.print_header("ISO to GOD Converter")
+        self.print_info("Convert Xbox 360/Xbox ISOs to Games-On-Demand format")
+        self.print_info("Using iso2god-rs: https://github.com/iliazeus/iso2god-rs")
+        
+        # Check for iso2god binary
+        iso2god_cmd = self.check_iso2god()
+        if not iso2god_cmd:
+            self.print_error("iso2god is not installed or not in PATH")
+            print()
+            self.print_info("Install iso2god-rs from: https://github.com/iliazeus/iso2god-rs/releases")
+            self.print_info("Download the appropriate binary for your system and add it to PATH")
+            print()
+            self.print_info("Quick install (Linux x86_64):")
+            print(f"  {Colors.OKCYAN}wget https://github.com/iliazeus/iso2god-rs/releases/latest/download/iso2god-linux-x86_64{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}chmod +x iso2god-linux-x86_64{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}sudo mv iso2god-linux-x86_64 /usr/local/bin/iso2god{Colors.ENDC}")
+            return
+        
+        self.print_success(f"Found iso2god binary: {iso2god_cmd}")
+        
+        # Scan directory
+        if not self.scan_directory(iso2god_cmd):
+            return
+        
+        # Select files
+        if not self.select_files():
+            self.print_info("Operation cancelled")
+            return
+        
+        # Convert
+        self.convert_all(iso2god_cmd)
+
+def main():
+    """Entry point"""
+    try:
+        converter = ISO2GODConverter()
+        converter.run()
+    except KeyboardInterrupt:
+        print(f"\n\n{Colors.WARNING}Operation cancelled by user{Colors.ENDC}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{Colors.FAIL}Unexpected error: {e}{Colors.ENDC}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
