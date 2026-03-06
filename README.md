@@ -447,9 +447,9 @@ iso2god                              # Interactive conversion in current directo
 
 **Quick install for iso2god-rs (Linux x86_64):**
 ```bash
-wget https://github.com/iliazeus/iso2god-rs/releases/latest/download/iso2god-linux-x86_64
-chmod +x iso2god-linux-x86_64
-sudo mv iso2god-linux-x86_64 /usr/local/bin/iso2god
+wget https://github.com/iliazeus/iso2god-rs/releases/download/v1.8.1/iso2god-x86_64-linux
+chmod +x iso2god-x86_64-linux
+sudo mv iso2god-x86_64-linux /usr/local/bin/iso2god
 ```
 
 ## �📖 Usage Guide

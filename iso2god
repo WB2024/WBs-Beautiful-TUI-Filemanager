@@ -491,9 +491,9 @@ class ISO2GODConverter:
             self.print_info("Download the appropriate binary for your system and add it to PATH")
             print()
             self.print_info("Quick install (Linux x86_64):")
-            print(f"  {Colors.OKCYAN}wget https://github.com/iliazeus/iso2god-rs/releases/latest/download/iso2god-linux-x86_64{Colors.ENDC}")
-            print(f"  {Colors.OKCYAN}chmod +x iso2god-linux-x86_64{Colors.ENDC}")
-            print(f"  {Colors.OKCYAN}sudo mv iso2god-linux-x86_64 /usr/local/bin/iso2god{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}wget https://github.com/iliazeus/iso2god-rs/releases/download/v1.8.1/iso2god-x86_64-linux{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}chmod +x iso2god-x86_64-linux{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}sudo mv iso2god-x86_64-linux /usr/local/bin/iso2god{Colors.ENDC}")
             return
         
         self.print_success(f"Found iso2god binary: {iso2god_cmd}")
