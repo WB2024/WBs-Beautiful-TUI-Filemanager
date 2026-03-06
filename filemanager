@@ -2510,7 +2510,7 @@ class FileManager:
         self.message_color = curses.COLOR_GREEN
 
     def run(self):
-        """Main loop"
+        """Main loop"""
         while self.running:
             self.draw()
             
