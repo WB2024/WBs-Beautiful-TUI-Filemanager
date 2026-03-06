@@ -449,7 +449,7 @@ iso2god                              # Interactive conversion in current directo
 ```bash
 wget https://github.com/iliazeus/iso2god-rs/releases/download/v1.8.1/iso2god-x86_64-linux
 chmod +x iso2god-x86_64-linux
-sudo mv iso2god-x86_64-linux /usr/local/bin/iso2god
+sudo mv iso2god-x86_64-linux /usr/local/bin/iso2god-rs
 ```
 
 ## �📖 Usage Guide

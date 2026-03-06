@@ -119,8 +119,8 @@ class ISO2GODConverter:
     
     def check_iso2god(self):
         """Check if iso2god binary is available"""
-        # Check common names for the binary
-        for cmd in ['iso2god', 'iso2god-rs']:
+        # Check common names for the binary (not 'iso2god' since that's this script)
+        for cmd in ['iso2god-rs', 'iso2god-bin', 'iso2god-x86_64-linux']:
             if shutil.which(cmd):
                 return cmd
         return None
@@ -493,7 +493,7 @@ class ISO2GODConverter:
             self.print_info("Quick install (Linux x86_64):")
             print(f"  {Colors.OKCYAN}wget https://github.com/iliazeus/iso2god-rs/releases/download/v1.8.1/iso2god-x86_64-linux{Colors.ENDC}")
             print(f"  {Colors.OKCYAN}chmod +x iso2god-x86_64-linux{Colors.ENDC}")
-            print(f"  {Colors.OKCYAN}sudo mv iso2god-x86_64-linux /usr/local/bin/iso2god{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}sudo mv iso2god-x86_64-linux /usr/local/bin/iso2god-rs{Colors.ENDC}")
             return
         
         self.print_success(f"Found iso2god binary: {iso2god_cmd}")
