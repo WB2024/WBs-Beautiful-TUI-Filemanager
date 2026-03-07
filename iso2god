@@ -374,8 +374,10 @@ class ISO2GODConverter:
         """Convert a single ISO file to GOD format"""
         filename = os.path.basename(filepath)
         
-        # Create output directory if it doesn't exist
-        os.makedirs(options['output_dir'], exist_ok=True)
+        # Create output subdirectory named after the ISO file (without extension)
+        iso_name = os.path.splitext(filename)[0]
+        file_output_dir = os.path.join(options['output_dir'], iso_name)
+        os.makedirs(file_output_dir, exist_ok=True)
         
         # Build iso2god command
         cmd_parts = [iso2god_cmd]
@@ -392,21 +394,22 @@ class ISO2GODConverter:
         # Add thread count
         cmd_parts.extend(['-j', str(options['num_threads'])])
         
-        # Add source and destination
+        # Add source and destination (use per-file output directory)
         cmd_parts.append(f'"{filepath}"')
-        cmd_parts.append(f'"{options["output_dir"]}"')
+        cmd_parts.append(f'"{file_output_dir}"')
         
         cmd = ' '.join(cmd_parts)
         
         # Execute conversion
         self.print_info(f"Converting: {filename}")
+        print(f"  {Colors.OKCYAN}Output folder: {file_output_dir}{Colors.ENDC}")
         print(f"  {Colors.OKCYAN}Command: {cmd}{Colors.ENDC}")
         
         # Run with output visible
         returncode, stdout, stderr = self.run_command(cmd, capture_output=False)
         
         if returncode == 0:
-            self.print_success(f"Converted: {filename}")
+            self.print_success(f"Converted: {filename} -> {iso_name}/")
             
             # Get input file size
             input_size = os.path.getsize(filepath)
