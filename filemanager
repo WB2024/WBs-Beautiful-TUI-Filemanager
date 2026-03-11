@@ -1623,6 +1623,9 @@ class FileManager:
         total_items = len(self.clipboard)
         operation_title = "COPYING FILES" if self.clipboard_operation == 'copy' else "MOVING FILES"
         
+        # Show immediate "preparing" status so UI doesn't appear frozen
+        self.show_progress(operation_title, "Preparing...", 0, total_items)
+        
         for idx, src_path in enumerate(self.clipboard, 1):
             src_path = Path(src_path)
             if not src_path.exists():
@@ -1716,6 +1719,9 @@ class FileManager:
         success = 0
         failed = 0
         total_items = len(files_to_delete)
+        
+        # Show immediate "preparing" status so UI doesn't appear frozen
+        self.show_progress("DELETING FILES", "Preparing...", 0, total_items)
         
         for idx, path in enumerate(files_to_delete, 1):
             path = Path(path)
@@ -2344,6 +2350,9 @@ class FileManager:
         success = 0
         failed = 0
         total_items = len(files)
+        
+        # Show immediate "preparing" status so UI doesn't appear frozen
+        self.show_progress("DELETING ALL FILES", "Preparing...", 0, total_items)
         
         for idx, entry in enumerate(files, 1):
             # Show progress
