@@ -742,6 +742,151 @@ class FileManager:
         if wait_for_key:
             self.stdscr.getch()
     
+    def show_progress(self, title, current_item, item_num, total_items, bytes_done=0, bytes_total=0):
+        """Display a progress indicator for file operations"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Calculate box dimensions
+        box_width = min(width - 4, 70)
+        box_height = 9 if bytes_total > 0 else 7
+        
+        start_y = (height - box_height) // 2
+        start_x = (width - box_width) // 2
+        
+        # Draw box background
+        self.stdscr.attron(curses.color_pair(7))
+        for i in range(box_height):
+            self.stdscr.addstr(start_y + i, start_x, " " * box_width)
+        self.stdscr.attroff(curses.color_pair(7))
+        
+        # Title
+        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+        self.stdscr.addstr(start_y, start_x + (box_width - len(title)) // 2, title)
+        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        
+        # Item progress
+        progress_text = f"Item {item_num} of {total_items}"
+        self.stdscr.addstr(start_y + 2, start_x + 2, progress_text[:box_width-4], curses.color_pair(7))
+        
+        # Current item name (truncate if necessary)
+        max_name_len = box_width - 6
+        if len(current_item) > max_name_len:
+            display_name = "..." + current_item[-(max_name_len-3):]
+        else:
+            display_name = current_item
+        self.stdscr.addstr(start_y + 3, start_x + 2, display_name[:box_width-4], curses.color_pair(7))
+        
+        # Item progress bar
+        bar_width = box_width - 8
+        if total_items > 0:
+            item_progress = item_num / total_items
+            filled = int(bar_width * item_progress)
+            bar = "█" * filled + "░" * (bar_width - filled)
+            percent = int(item_progress * 100)
+            self.stdscr.addstr(start_y + 4, start_x + 2, f"[{bar}] {percent:3d}%"[:box_width-4], curses.color_pair(7))
+        
+        # Bytes progress (for large file copies)
+        if bytes_total > 0:
+            bytes_progress = bytes_done / bytes_total if bytes_total > 0 else 0
+            filled = int(bar_width * bytes_progress)
+            bar = "█" * filled + "░" * (bar_width - filled)
+            percent = int(bytes_progress * 100)
+            
+            # Size strings
+            done_str = self.get_size_string(bytes_done).strip()
+            total_str = self.get_size_string(bytes_total).strip()
+            
+            self.stdscr.addstr(start_y + 6, start_x + 2, f"File: {done_str} / {total_str}"[:box_width-4], curses.color_pair(7))
+            self.stdscr.addstr(start_y + 7, start_x + 2, f"[{bar}] {percent:3d}%"[:box_width-4], curses.color_pair(7))
+        
+        self.stdscr.refresh()
+    
+    def copy_file_with_progress(self, src_path, dest_path, item_num, total_items, operation_title):
+        """Copy a file with progress indicator for large files"""
+        src_path = Path(src_path)
+        dest_path = Path(dest_path)
+        
+        # Get file size
+        file_size = src_path.stat().st_size
+        
+        # For small files (< 10MB), use simple copy
+        if file_size < 10 * 1024 * 1024:
+            self.show_progress(operation_title, src_path.name, item_num, total_items)
+            if src_path.is_dir():
+                shutil.copytree(src_path, dest_path)
+            else:
+                shutil.copy2(src_path, dest_path)
+            return
+        
+        # For large files, copy in chunks with progress
+        chunk_size = 1024 * 1024  # 1MB chunks
+        bytes_copied = 0
+        
+        with open(src_path, 'rb') as src_file:
+            with open(dest_path, 'wb') as dest_file:
+                while True:
+                    chunk = src_file.read(chunk_size)
+                    if not chunk:
+                        break
+                    dest_file.write(chunk)
+                    bytes_copied += len(chunk)
+                    
+                    # Update progress every chunk
+                    self.show_progress(
+                        operation_title,
+                        src_path.name,
+                        item_num,
+                        total_items,
+                        bytes_copied,
+                        file_size
+                    )
+        
+        # Copy file metadata
+        shutil.copystat(src_path, dest_path)
+    
+    def copy_tree_with_progress(self, src_path, dest_path, item_num, total_items, operation_title):
+        """Copy a directory tree with progress"""
+        src_path = Path(src_path)
+        dest_path = Path(dest_path)
+        
+        # Count total files first
+        total_files = sum(1 for _ in src_path.rglob('*') if _.is_file())
+        current_file = 0
+        
+        # Create destination directory
+        dest_path.mkdir(parents=True, exist_ok=True)
+        
+        # Copy all files
+        for src_file in src_path.rglob('*'):
+            rel_path = src_file.relative_to(src_path)
+            dest_file = dest_path / rel_path
+            
+            if src_file.is_dir():
+                dest_file.mkdir(parents=True, exist_ok=True)
+            else:
+                current_file += 1
+                # Ensure parent directory exists
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Update progress display
+                progress_name = f"{src_path.name}/{rel_path}" if len(str(rel_path)) < 30 else src_file.name
+                self.show_progress(
+                    operation_title,
+                    f"[{current_file}/{total_files}] {progress_name}",
+                    item_num,
+                    total_items
+                )
+                
+                # Copy file with progress for large files
+                file_size = src_file.stat().st_size
+                if file_size > 10 * 1024 * 1024:  # > 10MB
+                    self.copy_file_with_progress(src_file, dest_file, item_num, total_items, operation_title)
+                else:
+                    shutil.copy2(src_file, dest_file)
+        
+        # Copy directory metadata
+        shutil.copystat(src_path, dest_path)
+    
     def inspect_folder(self, folder_info):
         """Inspect folder contents in detail"""
         path = folder_info['path']
@@ -1226,8 +1371,13 @@ class FileManager:
                     if confirm_key in [ord('y'), ord('Y')]:
                         deleted_count = 0
                         error_count = 0
+                        total_to_delete = len(marked_folders)
                         
-                        for folder_path in list(marked_folders):
+                        for idx, folder_path in enumerate(list(marked_folders), 1):
+                            # Show progress
+                            folder_name = Path(folder_path).name
+                            self.show_progress("DELETING MARKED FOLDERS", folder_name, idx, total_to_delete)
+                            
                             try:
                                 shutil.rmtree(folder_path)
                                 deleted_count += 1
@@ -1274,8 +1424,12 @@ class FileManager:
                     if confirm_key in [ord('y'), ord('Y')]:
                         deleted_count = 0
                         error_count = 0
+                        total_to_delete = len(empty)
                         
-                        for folder in list(empty):
+                        for idx, folder in enumerate(list(empty), 1):
+                            # Show progress
+                            self.show_progress("DELETING EMPTY FOLDERS", folder['name'], idx, total_to_delete)
+                            
                             try:
                                 shutil.rmtree(folder['path'])
                                 deleted_count += 1
@@ -1316,8 +1470,12 @@ class FileManager:
                     if confirm_key in [ord('y'), ord('Y')]:
                         deleted_count = 0
                         error_count = 0
+                        total_to_delete = len(near_empty)
                         
-                        for folder in list(near_empty):
+                        for idx, folder in enumerate(list(near_empty), 1):
+                            # Show progress
+                            self.show_progress("DELETING NEAR-EMPTY FOLDERS", folder['name'], idx, total_to_delete)
+                            
                             try:
                                 shutil.rmtree(folder['path'])
                                 deleted_count += 1
@@ -1429,7 +1587,7 @@ class FileManager:
         self.message_color = curses.COLOR_GREEN
     
     def paste_from_clipboard(self):
-        """Paste files from clipboard to current directory"""
+        """Paste files from clipboard to current directory with progress indicator"""
         if not self.clipboard:
             self.message = "Clipboard is empty"
             self.message_color = curses.COLOR_YELLOW
@@ -1438,8 +1596,10 @@ class FileManager:
         success = 0
         failed = 0
         dest_dir = self.current_dir
+        total_items = len(self.clipboard)
+        operation_title = "COPYING FILES" if self.clipboard_operation == 'copy' else "MOVING FILES"
         
-        for src_path in self.clipboard:
+        for idx, src_path in enumerate(self.clipboard, 1):
             src_path = Path(src_path)
             if not src_path.exists():
                 failed += 1
@@ -1460,14 +1620,21 @@ class FileManager:
             try:
                 if self.clipboard_operation == 'copy':
                     if src_path.is_dir():
-                        shutil.copytree(src_path, dest_path)
+                        # Use progress-enabled directory copy
+                        self.copy_tree_with_progress(src_path, dest_path, idx, total_items, operation_title)
                     else:
-                        shutil.copy2(src_path, dest_path)
-                else:  # cut
+                        # Use progress-enabled file copy
+                        self.copy_file_with_progress(src_path, dest_path, idx, total_items, operation_title)
+                else:  # cut/move
+                    # Show progress for move operation
+                    self.show_progress(operation_title, src_path.name, idx, total_items)
                     shutil.move(str(src_path), str(dest_path))
                 success += 1
             except Exception as e:
                 failed += 1
+        
+        # Save operation type for message before clearing
+        was_copy = self.clipboard_operation == 'copy'
         
         # Clear clipboard after cut operation
         if self.clipboard_operation == 'cut':
@@ -1477,10 +1644,14 @@ class FileManager:
         # Clear selections
         self.selected_files.clear()
         
+        # Refresh directory to show changes
         self.load_directory()
         
+        # Force redraw to clear progress dialog
+        self.draw()
+        
         if failed == 0:
-            op = "Copied" if self.clipboard_operation == 'copy' else "Moved"
+            op = "Copied" if was_copy else "Moved"
             self.message = f"{op} {success} file(s)"
             self.message_color = curses.COLOR_GREEN
         else:
@@ -1488,7 +1659,7 @@ class FileManager:
             self.message_color = curses.COLOR_YELLOW
     
     def delete_files(self):
-        """Delete marked files or current file"""
+        """Delete marked files or current file with progress indicator"""
         # Determine what to delete
         if self.selected_files:
             files_to_delete = list(self.selected_files)
@@ -1517,12 +1688,17 @@ class FileManager:
             self.message_color = curses.COLOR_YELLOW
             return
         
-        # Perform deletion
+        # Perform deletion with progress
         success = 0
         failed = 0
+        total_items = len(files_to_delete)
         
-        for path in files_to_delete:
+        for idx, path in enumerate(files_to_delete, 1):
             path = Path(path)
+            
+            # Show progress
+            self.show_progress("DELETING FILES", path.name, idx, total_items)
+            
             try:
                 if path.is_dir():
                     shutil.rmtree(path)
@@ -1535,7 +1711,11 @@ class FileManager:
         # Clear selections
         self.selected_files.clear()
         
+        # Refresh directory to show changes
         self.load_directory()
+        
+        # Force redraw to clear progress dialog
+        self.draw()
         
         if failed == 0:
             self.message = f"Deleted {success} item(s)"
@@ -2114,7 +2294,7 @@ class FileManager:
         self.message_color = curses.COLOR_GREEN
     
     def bulk_delete_all(self):
-        """Delete all files in current directory"""
+        """Delete all files in current directory with progress indicator"""
         files = [e for e in self.entries if not e['is_dir'] and e['name'] != '..']
         
         if not files:
@@ -2136,18 +2316,26 @@ class FileManager:
             self.message_color = curses.COLOR_YELLOW
             return
         
-        # Delete files
+        # Delete files with progress
         success = 0
         failed = 0
+        total_items = len(files)
         
-        for entry in files:
+        for idx, entry in enumerate(files, 1):
+            # Show progress
+            self.show_progress("DELETING ALL FILES", entry['name'], idx, total_items)
+            
             try:
                 Path(entry['path']).unlink()
                 success += 1
             except:
                 failed += 1
         
+        # Refresh directory to show changes
         self.load_directory()
+        
+        # Force redraw to clear progress dialog
+        self.draw()
         
         if failed == 0:
             self.message = f"Deleted {success} file(s)"
