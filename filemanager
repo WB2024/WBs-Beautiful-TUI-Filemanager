@@ -800,6 +800,8 @@ class FileManager:
             self.stdscr.addstr(start_y + 7, start_x + 2, f"[{bar}] {percent:3d}%"[:box_width-4], curses.color_pair(7))
         
         self.stdscr.refresh()
+        # Give terminal time to actually display the update
+        curses.napms(1)
     
     def copy_file_with_progress(self, src_path, dest_path, item_num, total_items, operation_title):
         """Copy a file with progress indicator for large files"""
@@ -819,8 +821,20 @@ class FileManager:
             return
         
         # For large files, copy in chunks with progress
-        chunk_size = 1024 * 1024  # 1MB chunks
+        # Use smaller chunks for better progress granularity
+        chunk_size = 512 * 1024  # 512KB chunks for smoother progress
         bytes_copied = 0
+        chunks_written = 0
+        
+        # Show initial progress (0%)
+        self.show_progress(
+            operation_title,
+            src_path.name,
+            item_num,
+            total_items,
+            0,
+            file_size
+        )
         
         with open(src_path, 'rb') as src_file:
             with open(dest_path, 'wb') as dest_file:
@@ -830,8 +844,14 @@ class FileManager:
                         break
                     dest_file.write(chunk)
                     bytes_copied += len(chunk)
+                    chunks_written += 1
                     
-                    # Update progress every chunk
+                    # Flush to disk every 4MB to ensure actual I/O progress
+                    if chunks_written % 8 == 0:
+                        dest_file.flush()
+                        os.fsync(dest_file.fileno())
+                    
+                    # Update progress display
                     self.show_progress(
                         operation_title,
                         src_path.name,
@@ -840,6 +860,10 @@ class FileManager:
                         bytes_copied,
                         file_size
                     )
+                
+                # Final flush
+                dest_file.flush()
+                os.fsync(dest_file.fileno())
         
         # Copy file metadata
         shutil.copystat(src_path, dest_path)
