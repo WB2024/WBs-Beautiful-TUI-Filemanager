@@ -2396,6 +2396,7 @@ class FileManager:
             ("4", f"Extract & Convert ({archive_count} archives)", "extract_convert"),
             ("5", f"ISO to GOD ({iso_count} ISOs)", "iso2god"),
             ("6", "Fix Permissions (777 recursive)", "fix_perms"),
+            ("7", "Run Command", "run_cmd"),
         ]
         
         # Draw menu
@@ -2443,6 +2444,8 @@ class FileManager:
             self.run_iso2god()
         elif key == ord('6'):
             self.fix_permissions()
+        elif key == ord('7'):
+            self.run_command()
     
     def run_image_convert(self):
         """Run image-convert in current directory"""
@@ -2728,6 +2731,72 @@ class FileManager:
         
         self.load_directory()
         self.message = "ISO to GOD conversion complete"
+        self.message_color = curses.COLOR_GREEN
+
+    def run_command(self):
+        """Run a custom terminal command in the current directory"""
+        # Get command from user
+        command = self.get_text_input("Command: ")
+        
+        if not command:
+            self.message = "Cancelled"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        # Exit curses temporarily to run the command
+        curses.endwin()
+        
+        try:
+            # Change to current directory and run
+            original_dir = os.getcwd()
+            os.chdir(self.current_dir)
+            
+            print(f"\n{'='*70}")
+            print(f"Running command in: {self.current_dir}")
+            print(f"Command: {command}")
+            print(f"{'='*70}\n")
+            
+            # Run the command through shell to support pipes, redirects, etc.
+            subprocess.run(command, shell=True, check=False)
+            
+            print(f"\n{'='*70}")
+            print("Press Enter to return to file manager...")
+            print(f"{'='*70}")
+            input()
+            
+            os.chdir(original_dir)
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            print("Press Enter to continue...")
+            input()
+        
+        # Restore curses
+        self.stdscr = curses.initscr()
+        curses.start_color()
+        curses.use_default_colors()
+        curses.noecho()
+        curses.cbreak()
+        curses.curs_set(0)
+        self.stdscr.keypad(True)
+        
+        # Reinitialize color pairs
+        curses.init_pair(1, curses.COLOR_CYAN, -1)
+        curses.init_pair(2, curses.COLOR_GREEN, -1)
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(5, curses.COLOR_RED, -1)
+        curses.init_pair(6, curses.COLOR_WHITE, -1)
+        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        curses.init_pair(8, curses.COLOR_GREEN, -1)
+        curses.init_pair(9, curses.COLOR_RED, -1)
+        curses.init_pair(10, curses.COLOR_YELLOW, -1)
+        curses.init_pair(11, curses.COLOR_BLUE, -1)
+        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        
+        self.load_directory()
+        self.message = "Command completed"
         self.message_color = curses.COLOR_GREEN
 
     def run(self):
