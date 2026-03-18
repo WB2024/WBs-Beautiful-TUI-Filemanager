@@ -3354,9 +3354,10 @@ class FileManager:
             print(f"  Press q or Ctrl+C to close")
             print(f"{'='*70}\n")
             
-            # Use best quality for images: pixel blitter, high-res scaling, hold for viewing
-            cmd = [ncplayer_path, '-s', 'scalehi', '-b', 'pixel', '-t', '0',
-                   '-q', str(entry['path'])]
+            # Use best quality for images: pixel blitter, high-res scaling
+            # -t -1 means hold indefinitely, -k enables keyboard quit (q to exit)
+            cmd = [ncplayer_path, '-s', 'scalehi', '-b', 'pixel', '-t', '-1',
+                   '-k', '-q', str(entry['path'])]
             
             process = subprocess.Popen(cmd,
                 preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
