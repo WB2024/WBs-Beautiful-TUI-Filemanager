@@ -2934,8 +2934,20 @@ class FileManager:
             os.chdir(self.current_dir)
             
             print(f"\n{'='*70}")
+            print(f"DEBUG run_video_player:")
+            print(f"  config.video_player = '{self.config.video_player}'")
+            print(f"  player_pref         = '{player_pref}'")
+            print(f"  buddy_path          = {buddy_path}")
+            print(f"  ncplayer_path       = {ncplayer_path}")
+            print(f"  video_player_path   = {video_player_path}")
+            print(f"  config file         = {CONFIG_FILE}")
+            # Also read config file directly
+            try:
+                with open(CONFIG_FILE, 'r') as _f:
+                    print(f"  config contents     = {_f.read().strip()}")
+            except Exception as _e:
+                print(f"  config read error   = {_e}")
             print(f"Running video-player in: {self.current_dir}")
-            print(f"Current player preference: {self.config.video_player}")
             print(f"{'='*70}\n")
             
             # Use video-player tool if available, otherwise run player directly
@@ -3119,6 +3131,21 @@ class FileManager:
         
         try:
             print(f"\n{'='*70}")
+            print(f"DEBUG play_selected_video:")
+            print(f"  config.video_player = '{self.config.video_player}'")
+            print(f"  player_pref         = '{player_pref}'")
+            print(f"  buddy_path          = {buddy_path}")
+            print(f"  ncplayer_path       = {ncplayer_path}")
+            print(f"  CHOSEN player_name  = '{player_name}'")
+            print(f"  CHOSEN player_path  = {player_path}")
+            print(f"  config file         = {CONFIG_FILE}")
+            # Also read config file directly
+            try:
+                with open(CONFIG_FILE, 'r') as _f:
+                    print(f"  config contents     = {_f.read().strip()}")
+            except Exception as _e:
+                print(f"  config read error   = {_e}")
+            print(f"{'='*70}")
             print(f"Playing: {entry['name']}")
             print(f"Player: {player_name}")
             print(f"{'='*70}")

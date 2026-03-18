@@ -378,8 +378,22 @@ class VideoPlayer:
         """Main run method"""
         self.print_header("Video Player")
         
+        # Debug output
+        print(f"{Colors.WARNING}DEBUG video-player standalone:{Colors.ENDC}")
+        print(f"  VIDEO_PLAYER_PREF env = {os.environ.get('VIDEO_PLAYER_PREF', '(not set)')}")
+        print(f"  config file           = {CONFIG_FILE}")
+        try:
+            with open(CONFIG_FILE, 'r') as _f:
+                print(f"  config contents       = {_f.read().strip()}")
+        except Exception as _e:
+            print(f"  config read error     = {_e}")
+        print(f"  player_preference     = {self.player_preference}")
+        print()
+        
         # Check which players are installed
         available_players = self.check_players_installed()
+        
+        print(f"  available_players     = {available_players}")
         
         if not available_players:
             self.print_installation_help()
@@ -387,6 +401,10 @@ class VideoPlayer:
         
         # Get the player to use
         player_name, player_path = self.get_player(available_players)
+        
+        print(f"  CHOSEN player_name    = {player_name}")
+        print(f"  CHOSEN player_path    = {player_path}")
+        print()
         
         if not player_path:
             self.print_installation_help()
