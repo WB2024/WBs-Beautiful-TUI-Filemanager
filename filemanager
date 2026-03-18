@@ -3351,13 +3351,13 @@ class FileManager:
         try:
             print(f"\n{'='*70}")
             print(f"  Viewing: {entry['name']}")
-            print(f"  Press q or Ctrl+C to close")
+            print(f"  Press Ctrl+C to close")
             print(f"{'='*70}\n")
             
             # Use best quality for images: pixel blitter, high-res scaling
-            # -t -1 means hold indefinitely, -k enables keyboard quit (q to exit)
-            cmd = [ncplayer_path, '-s', 'scalehi', '-b', 'pixel', '-t', '-1',
-                   '-k', '-q', str(entry['path'])]
+            # -L loops the image (keeps it displayed), Ctrl+C to exit
+            cmd = [ncplayer_path, '-s', 'scalehi', '-b', 'pixel',
+                   '-q', '-L', str(entry['path'])]
             
             process = subprocess.Popen(cmd,
                 preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
