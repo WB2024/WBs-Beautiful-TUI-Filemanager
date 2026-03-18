@@ -2419,7 +2419,7 @@ class FileManager:
             ("5", f"ISO to GOD ({iso_count} ISOs)", "iso2god"),
             ("6", f"Sort Files ({file_count} files)", "file_sort"),
             ("7", f"Play Video ({video_count} videos) [{self.config.video_player}]", "video_player"),
-            ("8", f"View Image ({image_count} images)", "view_image"),
+            ("8", f"Browse Images ({image_count} images) [pixel-index]", "view_image"),
             ("9", "Fix Permissions (777 recursive)", "fix_perms"),
             ("0", "Run Command", "run_cmd"),
             ("s", "Video Player Settings", "video_settings"),
@@ -3327,21 +3327,10 @@ class FileManager:
         self.message_color = curses.COLOR_GREEN
 
     def view_selected_image(self):
-        """View the currently selected image file using ncplayer"""
-        if self.selected_index >= len(self.entries):
-            return
-        
-        entry = self.entries[self.selected_index]
-        
-        # Check if it's an image file
-        if entry['is_dir'] or not self.is_image_file(entry['path']):
-            self.message = "Not an image file"
-            self.message_color = curses.COLOR_YELLOW
-            return
-        
-        ncplayer_path = shutil.which('ncplayer')
-        if not ncplayer_path:
-            self.message = "ncplayer not found (install notcurses to view images)"
+        """View images in current directory using pixel-index (pi)"""
+        pi_path = shutil.which('pi')
+        if not pi_path:
+            self.message = "pixel-index (pi) not found - install with: npm install -g pixel-index"
             self.message_color = curses.COLOR_RED
             return
         
@@ -3349,26 +3338,12 @@ class FileManager:
         curses.endwin()
         
         try:
-            print(f"\n{'='*70}")
-            print(f"  Viewing: {entry['name']}")
-            print(f"  Press Ctrl+C to close")
-            print(f"{'='*70}\n")
-            
-            # Use best quality for images: pixel blitter, high-res scaling
-            # -L loops the image (keeps it displayed), Ctrl+C to exit
-            cmd = [ncplayer_path, '-s', 'scalehi', '-b', 'pixel',
-                   '-q', '-L', str(entry['path'])]
-            
-            process = subprocess.Popen(cmd,
+            # pixel-index launches its own TUI browser in the current directory
+            # Q or Ctrl+C exits back to filemanager
+            process = subprocess.Popen([pi_path],
+                cwd=str(self.current_path),
                 preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
             process.wait()
-            
-            print(f"\nPress Enter to return to file manager...")
-            
-            try:
-                input()
-            except (KeyboardInterrupt, EOFError):
-                pass
             
         except Exception as e:
             print(f"Error: {e}")
