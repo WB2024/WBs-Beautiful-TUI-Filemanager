@@ -231,8 +231,8 @@ git clone https://github.com/WB2024/WBs-Beautiful-TUI-Filemanager.git
 cd WBs-Beautiful-TUI-Filemanager
 
 # 2. Copy all utilities to system path
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort /usr/local/bin/video-player
 
 # 3. Run it!
 filemanager
@@ -247,6 +247,7 @@ filemanager
 - `image-convert` - Image format conversion utility (using ImageMagick)
 - `iso2god` - Xbox/Xbox 360 ISO to GOD converter (using iso2god-rs)
 - `file-sort` - File organization utility (sort by type, extension, size, date)
+- `video-player` - Terminal video player (using buddy)
 
 ### Manual Installation
 
@@ -260,12 +261,13 @@ wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/image-convert
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/iso2god
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/file-sort
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/video-player
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player
 
 # 3. Move to PATH
-sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player /usr/local/bin/
 
 # 4. Run from anywhere
 filemanager
@@ -275,7 +277,7 @@ filemanager
 
 ```bash
 # Check if all utilities are installed correctly
-which filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort
+which filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player
 
 # Should output:
 # /usr/local/bin/filemanager
@@ -286,6 +288,7 @@ which filemanager extractfile fixperms audio-to-flac extract-and-convert image-c
 # /usr/local/bin/image-convert
 # /usr/local/bin/iso2god
 # /usr/local/bin/file-sort
+# /usr/local/bin/video-player
 ```
 ## 🔄 Updating
 
@@ -301,8 +304,8 @@ cd /path/to/your/WBs-Beautiful-TUI-Filemanager
 git pull origin main
 
 # 3. Copy updated files to system path (replace old versions)
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort /usr/local/bin/video-player
 
 # 4. Verify the update
 filemanager
@@ -320,12 +323,13 @@ wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/image-convert -O image-convert
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/iso2god -O iso2god
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/file-sort -O file-sort
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/video-player -O video-player
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player
 
 # 3. Replace old versions in system path
-sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player /usr/local/bin/
 
 # 4. Verify the update
 filemanager
@@ -334,7 +338,7 @@ filemanager
 **Note:** Your bookmarks and configuration file (`~/.filemanager_config.json`) will be preserved during updates.
 ## 📦 Included Utilities
 
-This package includes eight powerful command-line tools:
+This package includes nine powerful command-line tools:
 
 ### 1. `filemanager` - Interactive TUI File Manager
 The main application providing a beautiful terminal-based file browser with built-in text editor, audio quality inspector, and tools for navigation, bookmarks, archive extraction, and folder analysis.
@@ -482,6 +486,53 @@ file-sort                            # Interactive sorting in current directory
 
 **No external dependencies required.**
 
+### 9. `video-player` - Terminal Video Player
+A standalone utility for playing videos directly in the terminal using buddy.
+
+**Features:**
+- **3 Render Modes:**
+  - **half** (default) - Best quality using Unicode half-blocks, 2x vertical resolution
+  - **ascii** - Classic ASCII art look with true-color tinting
+  - **braille** - Highest spatial resolution using braille patterns
+- **3 Quality Levels:**
+  - Fast (nearest-neighbor sampling)
+  - Balanced (4-tap supersample, default)
+  - Best (full box filter)
+- Scale video to fit terminal (10%-100%)
+- Loop videos indefinitely
+- Hide/show status bar
+- Interactive file selection
+- Works with all common video formats
+
+**Usage examples:**
+```bash
+video-player                         # Interactive playback in current directory
+```
+
+**Keyboard shortcut in file manager:**
+- Press `V` on any video file to play it directly with buddy
+
+**Dependencies:** buddy terminal video player (https://github.com/JVSCHANDRADITHYA/buddy)
+
+**Quick install for buddy:**
+```bash
+# Install Python dependencies
+pip install numpy imageio imageio-ffmpeg
+
+# Clone buddy
+git clone https://github.com/JVSCHANDRADITHYA/buddy
+cd buddy
+
+# Make available system-wide (Linux/macOS)
+chmod +x buddy.sh
+sudo ln -sf "$(pwd)/buddy.sh" /usr/local/bin/buddy
+```
+
+**Requirements:**
+- Python 3.9 or later
+- Terminal with 24-bit true color support (Windows Terminal, iTerm2, Kitty, Alacritty, etc.)
+- numpy, imageio, imageio-ffmpeg packages
+
 ## 📖 Usage Guide
 
 ### Basic Navigation
@@ -519,7 +570,8 @@ Quit:             q
 | `n` | Create new file or folder |
 | `R` | Rename current file or folder |
 | `o` | Open file operations menu |
-| `t` | Open tools menu (FLAC, image convert, extract, file sort) |
+| `t` | Open tools menu (FLAC, image convert, extract, file sort, video) |
+| `V` | Play selected video file with buddy |
 | `b` | Open bookmarks menu |
 | `p` | Fix permissions (777 recursive) |
 | `e` | Extract archives |

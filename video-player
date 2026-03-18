@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""
+Video Player - Terminal Video Player Wrapper
+Plays videos in the terminal using buddy (terminal video player)
+Requires: buddy (https://github.com/JVSCHANDRADITHYA/buddy)
+"""
+
+import os
+import subprocess
+import sys
+import shutil
+from pathlib import Path
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+class VideoPlayer:
+    def __init__(self):
+        self.current_dir = os.getcwd()
+        self.video_extensions = [
+            '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm',
+            '.m4v', '.mpg', '.mpeg', '.3gp', '.ogv', '.ts', '.m2ts',
+            '.vob', '.divx', '.xvid', '.f4v', '.rm', '.rmvb'
+        ]
+        
+        self.files_found = []
+        
+    def print_header(self, text):
+        """Print a formatted header"""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{text.center(70)}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
+    
+    def print_success(self, text):
+        """Print success message"""
+        print(f"{Colors.OKGREEN}✓ {text}{Colors.ENDC}")
+    
+    def print_error(self, text):
+        """Print error message"""
+        print(f"{Colors.FAIL}✗ {text}{Colors.ENDC}")
+    
+    def print_info(self, text):
+        """Print info message"""
+        print(f"{Colors.OKCYAN}ℹ {text}{Colors.ENDC}")
+    
+    def print_warning(self, text):
+        """Print warning message"""
+        print(f"{Colors.WARNING}⚠ {text}{Colors.ENDC}")
+    
+    def check_buddy_installed(self):
+        """Check if buddy is available in PATH"""
+        buddy_path = shutil.which('buddy')
+        if buddy_path:
+            return buddy_path
+        
+        # Also check for common installation locations
+        common_paths = [
+            os.path.expanduser('~/.local/bin/buddy'),
+            '/usr/local/bin/buddy',
+            '/usr/bin/buddy'
+        ]
+        
+        for path in common_paths:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+        
+        return None
+    
+    def get_file_size(self, filepath):
+        """Get human readable file size"""
+        try:
+            size = os.path.getsize(filepath)
+            for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                if size < 1024.0:
+                    return f"{size:.1f} {unit}"
+                size /= 1024.0
+            return f"{size:.1f} PB"
+        except:
+            return "Unknown"
+    
+    def scan_directory(self):
+        """Scan current directory for video files"""
+        self.print_info(f"Scanning: {self.current_dir}")
+        self.files_found = []
+        
+        try:
+            for filename in sorted(os.listdir(self.current_dir)):
+                filepath = os.path.join(self.current_dir, filename)
+                if os.path.isfile(filepath):
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext in self.video_extensions:
+                        size = self.get_file_size(filepath)
+                        self.files_found.append({
+                            'name': filename,
+                            'path': filepath,
+                            'size': size,
+                            'ext': ext
+                        })
+        except PermissionError:
+            self.print_error("Permission denied accessing directory")
+            return False
+        except Exception as e:
+            self.print_error(f"Error scanning directory: {e}")
+            return False
+        
+        if not self.files_found:
+            self.print_warning("No video files found in current directory")
+            return False
+        
+        self.print_success(f"Found {len(self.files_found)} video file(s)")
+        return True
+    
+    def display_files(self):
+        """Display list of video files"""
+        print(f"\n{Colors.BOLD}Video files in current directory:{Colors.ENDC}")
+        print("-" * 70)
+        
+        for i, file in enumerate(self.files_found, 1):
+            ext_color = Colors.OKGREEN
+            print(f"  [{i:2}] {ext_color}{file['name']}{Colors.ENDC}")
+            print(f"       Size: {file['size']}")
+        
+        print("-" * 70)
+    
+    def select_file(self):
+        """Let user select a video file to play"""
+        self.display_files()
+        
+        print(f"\n{Colors.OKBLUE}Enter file number to play (or 'q' to quit):{Colors.ENDC} ", end="")
+        
+        try:
+            choice = input().strip()
+            
+            if choice.lower() == 'q':
+                return None
+            
+            num = int(choice)
+            if 1 <= num <= len(self.files_found):
+                return self.files_found[num - 1]
+            else:
+                self.print_error(f"Invalid selection. Enter 1-{len(self.files_found)}")
+                return self.select_file()
+        except ValueError:
+            self.print_error("Please enter a number or 'q'")
+            return self.select_file()
+    
+    def get_play_options(self):
+        """Get playback options from user"""
+        options = {
+            'mode': 'half',
+            'quality': 2,
+            'scale': 1.0,
+            'loop': False,
+            'no_info': False
+        }
+        
+        print(f"\n{Colors.BOLD}Playback Options:{Colors.ENDC}")
+        print("-" * 40)
+        
+        # Render mode
+        print(f"\n{Colors.OKCYAN}Render Mode:{Colors.ENDC}")
+        print("  [1] half (default) - Best quality, Unicode half-blocks")
+        print("  [2] ascii - Classic ASCII art look")
+        print("  [3] braille - Highest resolution, braille patterns")
+        
+        mode_choice = input(f"{Colors.OKBLUE}Select mode (1-3, default=1): {Colors.ENDC}").strip()
+        if mode_choice == '2':
+            options['mode'] = 'ascii'
+        elif mode_choice == '3':
+            options['mode'] = 'braille'
+        
+        # Quality level
+        print(f"\n{Colors.OKCYAN}Quality Level:{Colors.ENDC}")
+        print("  [1] Fast - Nearest-neighbor sampling")
+        print("  [2] Balanced (default) - 4-tap supersample")
+        print("  [3] Best - Full box filter (highest CPU)")
+        
+        quality_choice = input(f"{Colors.OKBLUE}Select quality (1-3, default=2): {Colors.ENDC}").strip()
+        if quality_choice == '1':
+            options['quality'] = 1
+        elif quality_choice == '3':
+            options['quality'] = 3
+        
+        # Scale
+        scale_input = input(f"{Colors.OKBLUE}Terminal fill scale 0.1-1.0 (default=1.0): {Colors.ENDC}").strip()
+        if scale_input:
+            try:
+                scale = float(scale_input)
+                if 0.1 <= scale <= 1.0:
+                    options['scale'] = scale
+            except ValueError:
+                pass
+        
+        # Loop
+        loop_choice = input(f"{Colors.OKBLUE}Loop video? (y/N): {Colors.ENDC}").strip().lower()
+        options['loop'] = loop_choice in ['y', 'yes']
+        
+        # Hide info bar
+        info_choice = input(f"{Colors.OKBLUE}Hide status bar? (y/N): {Colors.ENDC}").strip().lower()
+        options['no_info'] = info_choice in ['y', 'yes']
+        
+        return options
+    
+    def play_video(self, video_file, buddy_path, options):
+        """Play the video using buddy"""
+        self.print_header("Playing Video")
+        
+        # Build command
+        cmd = [buddy_path, video_file['path']]
+        
+        cmd.extend(['-m', options['mode']])
+        cmd.extend(['-q', str(options['quality'])])
+        cmd.extend(['-s', str(options['scale'])])
+        
+        if options['loop']:
+            cmd.append('--loop')
+        
+        if options['no_info']:
+            cmd.append('--no-info')
+        
+        self.print_info(f"Playing: {video_file['name']}")
+        self.print_info(f"Mode: {options['mode']}, Quality: {options['quality']}, Scale: {options['scale']}")
+        
+        if options['loop']:
+            self.print_info("Loop: enabled (Ctrl+C to stop)")
+        
+        print(f"\n{Colors.WARNING}Press Ctrl+C to stop playback{Colors.ENDC}\n")
+        
+        try:
+            subprocess.run(cmd, check=False)
+            self.print_success("Playback complete")
+            return True
+        except KeyboardInterrupt:
+            print()  # New line after ^C
+            self.print_info("Playback stopped by user")
+            return True
+        except Exception as e:
+            self.print_error(f"Playback error: {e}")
+            return False
+    
+    def print_installation_help(self):
+        """Print help for installing buddy"""
+        print(f"\n{Colors.BOLD}buddy is not installed.{Colors.ENDC}")
+        print(f"\n{Colors.OKCYAN}buddy is a terminal video player with true 24-bit color support.{Colors.ENDC}")
+        print(f"{Colors.OKCYAN}GitHub: https://github.com/JVSCHANDRADITHYA/buddy{Colors.ENDC}")
+        
+        print(f"\n{Colors.BOLD}Installation:{Colors.ENDC}")
+        print("-" * 50)
+        
+        print(f"\n{Colors.WARNING}1. Install Python dependencies:{Colors.ENDC}")
+        print("   pip install numpy imageio imageio-ffmpeg")
+        
+        print(f"\n{Colors.WARNING}2. Clone the repository:{Colors.ENDC}")
+        print("   git clone https://github.com/JVSCHANDRADITHYA/buddy")
+        print("   cd buddy")
+        
+        print(f"\n{Colors.WARNING}3. Make buddy available system-wide:{Colors.ENDC}")
+        print("\n   Linux/macOS:")
+        print("   chmod +x buddy.sh")
+        print("   sudo ln -sf \"$(pwd)/buddy.sh\" /usr/local/bin/buddy")
+        
+        print("\n   Windows:")
+        print("   Add the buddy folder to your PATH")
+        
+        print(f"\n{Colors.OKCYAN}Requirements:{Colors.ENDC}")
+        print("   - Python 3.9 or later")
+        print("   - Terminal with 24-bit true color support")
+        print("   - numpy, imageio, imageio-ffmpeg packages")
+        
+        print()
+    
+    def use_quick_play(self):
+        """Ask if user wants to use default options"""
+        print(f"\n{Colors.OKBLUE}Use default settings? (Y/n): {Colors.ENDC}", end="")
+        choice = input().strip().lower()
+        return choice not in ['n', 'no']
+    
+    def run(self):
+        """Main run method"""
+        self.print_header("Video Player")
+        
+        # Check if buddy is installed
+        buddy_path = self.check_buddy_installed()
+        if not buddy_path:
+            self.print_installation_help()
+            return False
+        
+        self.print_success(f"buddy found: {buddy_path}")
+        
+        # Scan for video files
+        if not self.scan_directory():
+            return False
+        
+        while True:
+            # Select file
+            selected_file = self.select_file()
+            if not selected_file:
+                self.print_info("Exiting video player")
+                return True
+            
+            # Get options (or use defaults)
+            if self.use_quick_play():
+                options = {
+                    'mode': 'half',
+                    'quality': 2,
+                    'scale': 1.0,
+                    'loop': False,
+                    'no_info': False
+                }
+            else:
+                options = self.get_play_options()
+            
+            # Play the video
+            self.play_video(selected_file, buddy_path, options)
+            
+            # Ask to play another
+            print(f"\n{Colors.OKBLUE}Play another video? (Y/n): {Colors.ENDC}", end="")
+            again = input().strip().lower()
+            if again in ['n', 'no']:
+                break
+        
+        self.print_info("Exiting video player")
+        return True
+
+
+def main():
+    """Entry point"""
+    player = VideoPlayer()
+    
+    try:
+        success = player.run()
+        sys.exit(0 if success else 1)
+    except KeyboardInterrupt:
+        print(f"\n{Colors.WARNING}Interrupted by user{Colors.ENDC}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{Colors.FAIL}Error: {e}{Colors.ENDC}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
