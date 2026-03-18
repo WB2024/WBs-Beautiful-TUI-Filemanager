@@ -245,8 +245,54 @@ class VideoPlayer:
             self.save_player_preference('ncplayer')
             self.print_success("Player set to: ncplayer")
     
-    def get_buddy_options(self):
-        """Get playback options for buddy"""
+    def get_ncplayer_options(self):
+        """Get playback options for ncplayer"""
+        options = {
+            'scaling': 'scalehi',
+            'blitter': 'pixel',
+            'loop': False,
+            'quiet': False,
+        }
+        
+        print(f"\n{Colors.BOLD}Playback Options (ncplayer):{Colors.ENDC}")
+        print("-" * 40)
+        
+        # Scaling mode
+        print(f"\n{Colors.OKCYAN}Scaling Mode:{Colors.ENDC}")
+        print("  [1] none     - No scaling")
+        print("  [2] scale    - Maintain aspect ratio")
+        print("  [3] scalehi  - High-quality scale (default)")
+        print("  [4] hires    - Use highest resolution blitter")
+        print("  [5] stretch  - Fill terminal (may distort)")
+        
+        scale_choice = input(f"{Colors.OKBLUE}Select scaling (1-5, default=3): {Colors.ENDC}").strip()
+        scale_map = {'1': 'none', '2': 'scale', '3': 'scalehi', '4': 'hires', '5': 'stretch'}
+        if scale_choice in scale_map:
+            options['scaling'] = scale_map[scale_choice]
+        
+        # Blitter mode
+        print(f"\n{Colors.OKCYAN}Blitter (render method):{Colors.ENDC}")
+        print("  [1] ascii    - ASCII characters only")
+        print("  [2] half     - Unicode half-blocks")
+        print("  [3] quad     - Unicode quadrant characters")
+        print("  [4] sex      - Unicode sextant characters")
+        print("  [5] braille  - Braille patterns (highest text res)")
+        print("  [6] pixel    - True pixel rendering (default, best quality)")
+        
+        blitter_choice = input(f"{Colors.OKBLUE}Select blitter (1-6, default=6): {Colors.ENDC}").strip()
+        blitter_map = {'1': 'ascii', '2': 'half', '3': 'quad', '4': 'sex', '5': 'braille', '6': 'pixel'}
+        if blitter_choice in blitter_map:
+            options['blitter'] = blitter_map[blitter_choice]
+        
+        # Loop
+        loop_choice = input(f"{Colors.OKBLUE}Loop playback? (y/N): {Colors.ENDC}").strip().lower()
+        options['loop'] = loop_choice in ['y', 'yes']
+        
+        # Quiet mode
+        quiet_choice = input(f"{Colors.OKBLUE}Hide frame info bar? (y/N): {Colors.ENDC}").strip().lower()
+        options['quiet'] = quiet_choice in ['y', 'yes']
+        
+        return options
         options = {
             'mode': 'half',
             'quality': 2,
@@ -322,23 +368,35 @@ class VideoPlayer:
                     cmd.append('--no-info')
                 self.print_info(f"Mode: {options['mode']}, Quality: {options['quality']}, Scale: {options['scale']}")
         else:  # ncplayer
-            cmd = [player_path, '-k', video_file['path']]  # -k for keyboard control
+            cmd = [player_path]
+            if options:
+                if options.get('scaling'):
+                    cmd.extend(['-s', options['scaling']])
+                if options.get('blitter'):
+                    cmd.extend(['-b', options['blitter']])
+                if options.get('loop'):
+                    cmd.append('-L')
+                if options.get('quiet'):
+                    cmd.append('-q')
+                self.print_info(f"Scaling: {options.get('scaling', 'default')}, Blitter: {options.get('blitter', 'default')}")
+            else:
+                # Best defaults
+                cmd.extend(['-s', 'scalehi', '-b', 'pixel', '-q'])
+            cmd.append(video_file['path'])
         
-        print(f"\n{Colors.WARNING}Press 'q' to stop playback{Colors.ENDC}\n")
-        
-        # Store original signal handler and ignore SIGINT in parent
-        original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        print(f"\n{Colors.WARNING}Press Ctrl+C to stop playback{Colors.ENDC}\n")
         
         try:
-            # Run player in its own session so Ctrl+C doesn't propagate to parent
-            process = subprocess.Popen(cmd, start_new_session=True)
+            # Run player directly - it handles its own signals
+            process = subprocess.Popen(cmd,
+                preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
             process.wait()
-            
-            signal.signal(signal.SIGINT, original_sigint)
             self.print_success("Playback complete")
             return True
+        except KeyboardInterrupt:
+            self.print_info("Playback stopped")
+            return True
         except Exception as e:
-            signal.signal(signal.SIGINT, original_sigint)
             self.print_error(f"Playback error: {e}")
             return False
     
@@ -378,22 +436,8 @@ class VideoPlayer:
         """Main run method"""
         self.print_header("Video Player")
         
-        # Debug output
-        print(f"{Colors.WARNING}DEBUG video-player standalone:{Colors.ENDC}")
-        print(f"  VIDEO_PLAYER_PREF env = {os.environ.get('VIDEO_PLAYER_PREF', '(not set)')}")
-        print(f"  config file           = {CONFIG_FILE}")
-        try:
-            with open(CONFIG_FILE, 'r') as _f:
-                print(f"  config contents       = {_f.read().strip()}")
-        except Exception as _e:
-            print(f"  config read error     = {_e}")
-        print(f"  player_preference     = {self.player_preference}")
-        print()
-        
         # Check which players are installed
         available_players = self.check_players_installed()
-        
-        print(f"  available_players     = {available_players}")
         
         if not available_players:
             self.print_installation_help()
@@ -401,10 +445,6 @@ class VideoPlayer:
         
         # Get the player to use
         player_name, player_path = self.get_player(available_players)
-        
-        print(f"  CHOSEN player_name    = {player_name}")
-        print(f"  CHOSEN player_path    = {player_path}")
-        print()
         
         if not player_path:
             self.print_installation_help()
@@ -427,19 +467,29 @@ class VideoPlayer:
                 self.print_info("Exiting video player")
                 return True
             
-            # Get options for buddy (ncplayer uses defaults)
+            # Get options
             options = None
             if player_name == 'buddy':
                 if self.use_quick_play():
                     options = {
                         'mode': 'half',
-                        'quality': 2,
+                        'quality': 3,
                         'scale': 1.0,
                         'loop': False,
                         'no_info': False
                     }
                 else:
                     options = self.get_buddy_options()
+            elif player_name == 'ncplayer':
+                if self.use_quick_play():
+                    options = {
+                        'scaling': 'scalehi',
+                        'blitter': 'pixel',
+                        'loop': False,
+                        'quiet': True
+                    }
+                else:
+                    options = self.get_ncplayer_options()
             
             # Play the video
             self.play_video(selected_file, player_name, player_path, options)
