@@ -3350,7 +3350,7 @@ class FileManager:
             # pixel-index launches its own TUI browser in the current directory
             # Q or Ctrl+C exits back to filemanager
             process = subprocess.Popen([pi_path],
-                cwd=str(self.current_path),
+                cwd=str(self.current_dir),
                 preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
             process.wait()
             
