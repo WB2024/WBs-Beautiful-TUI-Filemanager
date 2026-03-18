@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """
 Video Player - Terminal Video Player Wrapper
-Plays videos in the terminal using buddy (terminal video player)
-Requires: buddy (https://github.com/JVSCHANDRADITHYA/buddy)
+Plays videos in the terminal using buddy or ncplayer
+Supports: buddy (https://github.com/JVSCHANDRADITHYA/buddy)
+          ncplayer (https://github.com/dankamongmen/notcurses)
 """
 
 import os
 import subprocess
 import sys
 import shutil
+import signal
+import json
 from pathlib import Path
+
+# Config file (shared with filemanager)
+CONFIG_FILE = Path.home() / '.filemanager_config.json'
 
 class Colors:
     """ANSI color codes for terminal output"""
@@ -33,6 +39,37 @@ class VideoPlayer:
         ]
         
         self.files_found = []
+        self.player_preference = self.load_player_preference()
+        
+    def load_player_preference(self):
+        """Load video player preference from config"""
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    data = json.load(f)
+                    return data.get('video_player', 'auto')
+            except:
+                pass
+        return 'auto'
+    
+    def save_player_preference(self, player):
+        """Save video player preference to config"""
+        data = {}
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    data = json.load(f)
+            except:
+                pass
+        
+        data['video_player'] = player
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+        except:
+            pass
+        
+        self.player_preference = player
         
     def print_header(self, text):
         """Print a formatted header"""
@@ -56,24 +93,41 @@ class VideoPlayer:
         """Print warning message"""
         print(f"{Colors.WARNING}⚠ {text}{Colors.ENDC}")
     
-    def check_buddy_installed(self):
-        """Check if buddy is available in PATH"""
+    def check_players_installed(self):
+        """Check which video players are available"""
+        players = {}
+        
+        # Check buddy
         buddy_path = shutil.which('buddy')
         if buddy_path:
-            return buddy_path
+            players['buddy'] = buddy_path
         
-        # Also check for common installation locations
-        common_paths = [
-            os.path.expanduser('~/.local/bin/buddy'),
-            '/usr/local/bin/buddy',
-            '/usr/bin/buddy'
-        ]
+        # Check ncplayer (part of notcurses)
+        ncplayer_path = shutil.which('ncplayer')
+        if ncplayer_path:
+            players['ncplayer'] = ncplayer_path
         
-        for path in common_paths:
-            if os.path.isfile(path) and os.access(path, os.X_OK):
-                return path
+        return players
+    
+    def get_player(self, available_players):
+        """Get the player to use based on preference"""
+        if self.player_preference == 'buddy' and 'buddy' in available_players:
+            return 'buddy', available_players['buddy']
+        elif self.player_preference == 'ncplayer' and 'ncplayer' in available_players:
+            return 'ncplayer', available_players['ncplayer']
+        elif self.player_preference == 'auto':
+            # Prefer buddy, fall back to ncplayer
+            if 'buddy' in available_players:
+                return 'buddy', available_players['buddy']
+            elif 'ncplayer' in available_players:
+                return 'ncplayer', available_players['ncplayer']
         
-        return None
+        # If preferred player not found, use any available
+        if available_players:
+            name = list(available_players.keys())[0]
+            return name, available_players[name]
+        
+        return None, None
     
     def get_file_size(self, filepath):
         """Get human readable file size"""
@@ -135,13 +189,17 @@ class VideoPlayer:
         """Let user select a video file to play"""
         self.display_files()
         
-        print(f"\n{Colors.OKBLUE}Enter file number to play (or 'q' to quit):{Colors.ENDC} ", end="")
+        print(f"\n{Colors.OKBLUE}Enter file number to play (or 'q' to quit, 's' for settings):{Colors.ENDC} ", end="")
         
         try:
             choice = input().strip()
             
             if choice.lower() == 'q':
                 return None
+            
+            if choice.lower() == 's':
+                self.configure_player()
+                return self.select_file()
             
             num = int(choice)
             if 1 <= num <= len(self.files_found):
@@ -150,11 +208,40 @@ class VideoPlayer:
                 self.print_error(f"Invalid selection. Enter 1-{len(self.files_found)}")
                 return self.select_file()
         except ValueError:
-            self.print_error("Please enter a number or 'q'")
+            self.print_error("Please enter a number, 'q', or 's'")
             return self.select_file()
     
-    def get_play_options(self):
-        """Get playback options from user"""
+    def configure_player(self):
+        """Configure preferred video player"""
+        available = self.check_players_installed()
+        
+        print(f"\n{Colors.BOLD}Video Player Settings{Colors.ENDC}")
+        print("-" * 50)
+        print(f"Current preference: {Colors.OKCYAN}{self.player_preference}{Colors.ENDC}")
+        print(f"\nAvailable players:")
+        
+        buddy_status = f"{Colors.OKGREEN}[INSTALLED]{Colors.ENDC}" if 'buddy' in available else f"{Colors.FAIL}[NOT FOUND]{Colors.ENDC}"
+        ncplayer_status = f"{Colors.OKGREEN}[INSTALLED]{Colors.ENDC}" if 'ncplayer' in available else f"{Colors.FAIL}[NOT FOUND]{Colors.ENDC}"
+        
+        print(f"  [1] auto - Try both (buddy first) {'[CURRENT]' if self.player_preference == 'auto' else ''}")
+        print(f"  [2] buddy - Half-block/ASCII/braille {buddy_status} {'[CURRENT]' if self.player_preference == 'buddy' else ''}")
+        print(f"  [3] ncplayer - notcurses player {ncplayer_status} {'[CURRENT]' if self.player_preference == 'ncplayer' else ''}")
+        
+        print(f"\n{Colors.OKBLUE}Select player (1-3, or Enter to cancel):{Colors.ENDC} ", end="")
+        choice = input().strip()
+        
+        if choice == '1':
+            self.save_player_preference('auto')
+            self.print_success("Player set to: auto")
+        elif choice == '2':
+            self.save_player_preference('buddy')
+            self.print_success("Player set to: buddy")
+        elif choice == '3':
+            self.save_player_preference('ncplayer')
+            self.print_success("Player set to: ncplayer")
+    
+    def get_buddy_options(self):
+        """Get playback options for buddy"""
         options = {
             'mode': 'half',
             'quality': 2,
@@ -163,7 +250,7 @@ class VideoPlayer:
             'no_info': False
         }
         
-        print(f"\n{Colors.BOLD}Playback Options:{Colors.ENDC}")
+        print(f"\n{Colors.BOLD}Playback Options (buddy):{Colors.ENDC}")
         print("-" * 40)
         
         # Render mode
@@ -210,71 +297,70 @@ class VideoPlayer:
         
         return options
     
-    def play_video(self, video_file, buddy_path, options):
-        """Play the video using buddy"""
-        self.print_header("Playing Video")
-        
-        # Build command
-        cmd = [buddy_path, video_file['path']]
-        
-        cmd.extend(['-m', options['mode']])
-        cmd.extend(['-q', str(options['quality'])])
-        cmd.extend(['-s', str(options['scale'])])
-        
-        if options['loop']:
-            cmd.append('--loop')
-        
-        if options['no_info']:
-            cmd.append('--no-info')
+    def play_video(self, video_file, player_name, player_path, options=None):
+        """Play the video using the selected player"""
+        self.print_header(f"Playing Video ({player_name})")
         
         self.print_info(f"Playing: {video_file['name']}")
-        self.print_info(f"Mode: {options['mode']}, Quality: {options['quality']}, Scale: {options['scale']}")
+        self.print_info(f"Player: {player_name}")
         
-        if options['loop']:
-            self.print_info("Loop: enabled (Ctrl+C to stop)")
+        # Build command based on player
+        if player_name == 'buddy':
+            cmd = [player_path, video_file['path']]
+            if options:
+                cmd.extend(['-m', options['mode']])
+                cmd.extend(['-q', str(options['quality'])])
+                cmd.extend(['-s', str(options['scale'])])
+                if options['loop']:
+                    cmd.append('--loop')
+                if options['no_info']:
+                    cmd.append('--no-info')
+                self.print_info(f"Mode: {options['mode']}, Quality: {options['quality']}, Scale: {options['scale']}")
+        else:  # ncplayer
+            cmd = [player_path, '-k', video_file['path']]  # -k for keyboard control
         
-        print(f"\n{Colors.WARNING}Press Ctrl+C to stop playback{Colors.ENDC}\n")
+        print(f"\n{Colors.WARNING}Press 'q' to stop playback{Colors.ENDC}\n")
+        
+        # Store original signal handler and ignore SIGINT in parent
+        original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
         
         try:
-            subprocess.run(cmd, check=False)
+            # Run player - it will receive SIGINT, parent won't
+            process = subprocess.Popen(cmd, 
+                preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+            process.wait()
+            
+            signal.signal(signal.SIGINT, original_sigint)
             self.print_success("Playback complete")
             return True
-        except KeyboardInterrupt:
-            print()  # New line after ^C
-            self.print_info("Playback stopped by user")
-            return True
         except Exception as e:
+            signal.signal(signal.SIGINT, original_sigint)
             self.print_error(f"Playback error: {e}")
             return False
     
     def print_installation_help(self):
-        """Print help for installing buddy"""
-        print(f"\n{Colors.BOLD}buddy is not installed.{Colors.ENDC}")
-        print(f"\n{Colors.OKCYAN}buddy is a terminal video player with true 24-bit color support.{Colors.ENDC}")
-        print(f"{Colors.OKCYAN}GitHub: https://github.com/JVSCHANDRADITHYA/buddy{Colors.ENDC}")
+        """Print help for installing video players"""
+        print(f"\n{Colors.BOLD}No video player found!{Colors.ENDC}")
+        print(f"\nYou need either {Colors.OKCYAN}buddy{Colors.ENDC} or {Colors.OKCYAN}ncplayer{Colors.ENDC} (notcurses).\n")
         
-        print(f"\n{Colors.BOLD}Installation:{Colors.ENDC}")
+        print(f"{Colors.BOLD}Option 1: Install buddy{Colors.ENDC}")
         print("-" * 50)
+        print(f"{Colors.OKCYAN}GitHub: https://github.com/JVSCHANDRADITHYA/buddy{Colors.ENDC}")
+        print(f"\n{Colors.WARNING}Install:{Colors.ENDC}")
+        print("   # Create venv (for PEP 668 systems)")
+        print("   cd /path/to/buddy && python3 -m venv venv")
+        print("   venv/bin/pip install numpy imageio imageio-ffmpeg")
+        print("   # Then create wrapper script (see README)")
         
-        print(f"\n{Colors.WARNING}1. Install Python dependencies:{Colors.ENDC}")
-        print("   pip install numpy imageio imageio-ffmpeg")
-        
-        print(f"\n{Colors.WARNING}2. Clone the repository:{Colors.ENDC}")
-        print("   git clone https://github.com/JVSCHANDRADITHYA/buddy")
-        print("   cd buddy")
-        
-        print(f"\n{Colors.WARNING}3. Make buddy available system-wide:{Colors.ENDC}")
-        print("\n   Linux/macOS:")
-        print("   chmod +x buddy.sh")
-        print("   sudo ln -sf \"$(pwd)/buddy.sh\" /usr/local/bin/buddy")
-        
-        print("\n   Windows:")
-        print("   Add the buddy folder to your PATH")
-        
-        print(f"\n{Colors.OKCYAN}Requirements:{Colors.ENDC}")
-        print("   - Python 3.9 or later")
-        print("   - Terminal with 24-bit true color support")
-        print("   - numpy, imageio, imageio-ffmpeg packages")
+        print(f"\n{Colors.BOLD}Option 2: Install ncplayer (notcurses){Colors.ENDC}")
+        print("-" * 50)
+        print(f"{Colors.OKCYAN}GitHub: https://github.com/dankamongmen/notcurses{Colors.ENDC}")
+        print(f"\n{Colors.WARNING}Install (Debian/Ubuntu):{Colors.ENDC}")
+        print("   sudo apt install notcurses-bin")
+        print(f"\n{Colors.WARNING}Install (Arch):{Colors.ENDC}")
+        print("   sudo pacman -S notcurses")
+        print(f"\n{Colors.WARNING}Install (macOS):{Colors.ENDC}")
+        print("   brew install notcurses")
         
         print()
     
@@ -288,13 +374,25 @@ class VideoPlayer:
         """Main run method"""
         self.print_header("Video Player")
         
-        # Check if buddy is installed
-        buddy_path = self.check_buddy_installed()
-        if not buddy_path:
+        # Check which players are installed
+        available_players = self.check_players_installed()
+        
+        if not available_players:
             self.print_installation_help()
             return False
         
-        self.print_success(f"buddy found: {buddy_path}")
+        # Get the player to use
+        player_name, player_path = self.get_player(available_players)
+        
+        if not player_path:
+            self.print_installation_help()
+            return False
+        
+        self.print_success(f"Using: {player_name} ({player_path})")
+        self.print_info(f"Preference: {self.player_preference}")
+        
+        if len(available_players) > 1:
+            self.print_info("Tip: Press 's' in file selection to change player")
         
         # Scan for video files
         if not self.scan_directory():
@@ -307,26 +405,31 @@ class VideoPlayer:
                 self.print_info("Exiting video player")
                 return True
             
-            # Get options (or use defaults)
-            if self.use_quick_play():
-                options = {
-                    'mode': 'half',
-                    'quality': 2,
-                    'scale': 1.0,
-                    'loop': False,
-                    'no_info': False
-                }
-            else:
-                options = self.get_play_options()
+            # Get options for buddy (ncplayer uses defaults)
+            options = None
+            if player_name == 'buddy':
+                if self.use_quick_play():
+                    options = {
+                        'mode': 'half',
+                        'quality': 2,
+                        'scale': 1.0,
+                        'loop': False,
+                        'no_info': False
+                    }
+                else:
+                    options = self.get_buddy_options()
             
             # Play the video
-            self.play_video(selected_file, buddy_path, options)
+            self.play_video(selected_file, player_name, player_path, options)
             
             # Ask to play another
             print(f"\n{Colors.OKBLUE}Play another video? (Y/n): {Colors.ENDC}", end="")
             again = input().strip().lower()
             if again in ['n', 'no']:
                 break
+            
+            # Re-check player in case settings changed
+            player_name, player_path = self.get_player(self.check_players_installed())
         
         self.print_info("Exiting video player")
         return True

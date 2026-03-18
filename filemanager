@@ -11,6 +11,7 @@ import subprocess
 import shutil
 import curses
 import json
+import signal
 from pathlib import Path
 from collections import defaultdict
 import mimetypes
@@ -24,6 +25,7 @@ class Config:
     
     def __init__(self):
         self.bookmarks = {}
+        self.video_player = 'auto'  # 'buddy', 'ncplayer', or 'auto'
         self.load()
     
     def load(self):
@@ -33,16 +35,29 @@ class Config:
                 with open(CONFIG_FILE, 'r') as f:
                     data = json.load(f)
                     self.bookmarks = data.get('bookmarks', {})
+                    self.video_player = data.get('video_player', 'auto')
             except:
                 self.bookmarks = {}
+                self.video_player = 'auto'
     
     def save(self):
         """Save configuration to file"""
         try:
             with open(CONFIG_FILE, 'w') as f:
-                json.dump({'bookmarks': self.bookmarks}, f, indent=2)
+                json.dump({
+                    'bookmarks': self.bookmarks,
+                    'video_player': self.video_player
+                }, f, indent=2)
         except:
             pass
+    
+    def set_video_player(self, player):
+        """Set preferred video player (buddy, ncplayer, or auto)"""
+        if player in ('buddy', 'ncplayer', 'auto'):
+            self.video_player = player
+            self.save()
+            return True
+        return False
     
     def add_bookmark(self, name, path):
         """Add a bookmark"""
@@ -2402,9 +2417,10 @@ class FileManager:
             ("4", f"Extract & Convert ({archive_count} archives)", "extract_convert"),
             ("5", f"ISO to GOD ({iso_count} ISOs)", "iso2god"),
             ("6", f"Sort Files ({file_count} files)", "file_sort"),
-            ("7", f"Play Video ({video_count} videos)", "video_player"),
+            ("7", f"Play Video ({video_count} videos) [{self.config.video_player}]", "video_player"),
             ("8", "Fix Permissions (777 recursive)", "fix_perms"),
             ("9", "Run Command", "run_cmd"),
+            ("s", "Video Player Settings", "video_settings"),
         ]
         
         # Draw menu
@@ -2458,6 +2474,8 @@ class FileManager:
             self.fix_permissions()
         elif key == ord('9'):
             self.run_command()
+        elif key == ord('s'):
+            self.configure_video_player()
     
     def run_image_convert(self):
         """Run image-convert in current directory"""
@@ -2883,11 +2901,16 @@ class FileManager:
         self.message_color = curses.COLOR_GREEN
 
     def run_video_player(self):
-        """Run video-player (buddy wrapper) in current directory"""
-        # Check if video-player is available
+        """Run video-player tool in current directory with configurable player"""
+        # Determine which video player to use
+        player_pref = self.config.video_player
+        buddy_path = shutil.which('buddy')
+        ncplayer_path = shutil.which('ncplayer')
         video_player_path = shutil.which('video-player')
-        if not video_player_path:
-            self.message = "video-player not found in PATH"
+        
+        # For the video-player tool, just check if it exists
+        if not video_player_path and not buddy_path and not ncplayer_path:
+            self.message = "No video player found (install buddy or ncplayer)"
             self.message_color = curses.COLOR_RED
             return
         
@@ -2902,6 +2925,9 @@ class FileManager:
         # Exit curses temporarily to run the tool
         curses.endwin()
         
+        # Store original signal handler and ignore SIGINT in parent
+        original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        
         try:
             # Change to current directory and run
             original_dir = os.getcwd()
@@ -2909,18 +2935,41 @@ class FileManager:
             
             print(f"\n{'='*70}")
             print(f"Running video-player in: {self.current_dir}")
+            print(f"Current player preference: {self.config.video_player}")
             print(f"{'='*70}\n")
             
-            subprocess.run(['video-player'], check=False)
+            # Use video-player tool if available, otherwise run player directly
+            if video_player_path:
+                process = subprocess.Popen(['video-player'], 
+                    preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+            else:
+                # Run the configured player directly
+                if player_pref == 'buddy' and buddy_path:
+                    process = subprocess.Popen([buddy_path], 
+                        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                elif player_pref == 'ncplayer' and ncplayer_path:
+                    process = subprocess.Popen([ncplayer_path], 
+                        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                elif buddy_path:
+                    process = subprocess.Popen([buddy_path], 
+                        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                else:
+                    process = subprocess.Popen([ncplayer_path], 
+                        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+            
+            process.wait()
             
             print(f"\n{'='*70}")
             print("Press Enter to return to file manager...")
             print(f"{'='*70}")
+            
+            signal.signal(signal.SIGINT, original_sigint)
             input()
             
             os.chdir(original_dir)
             
         except Exception as e:
+            signal.signal(signal.SIGINT, original_sigint)
             print(f"Error: {e}")
             print("Press Enter to continue...")
             input()
@@ -2953,8 +3002,68 @@ class FileManager:
         self.message = "Video playback complete"
         self.message_color = curses.COLOR_GREEN
 
+    def configure_video_player(self):
+        """Show menu to configure preferred video player"""
+        height, width = self.stdscr.getmaxyx()
+        
+        # Check which players are available
+        buddy_available = shutil.which('buddy') is not None
+        ncplayer_available = shutil.which('ncplayer') is not None
+        current = self.config.video_player
+        
+        menu_items = [
+            ("1", f"Auto (try both) {'[CURRENT]' if current == 'auto' else ''}", "auto"),
+            ("2", f"buddy (half-block/ASCII/braille) {'[CURRENT]' if current == 'buddy' else ''} {'[INSTALLED]' if buddy_available else '[NOT FOUND]'}", "buddy"),
+            ("3", f"ncplayer (notcurses) {'[CURRENT]' if current == 'ncplayer' else ''} {'[INSTALLED]' if ncplayer_available else '[NOT FOUND]'}", "ncplayer"),
+        ]
+        
+        # Draw menu
+        menu_width = 55
+        menu_height = len(menu_items) + 6
+        start_y = (height - menu_height) // 2
+        start_x = (width - menu_width) // 2
+        
+        # Draw box
+        self.stdscr.attron(curses.color_pair(7))
+        self.stdscr.addstr(start_y, start_x, "+" + "-" * (menu_width - 2) + "+")
+        self.stdscr.addstr(start_y + 1, start_x, "|" + " VIDEO PLAYER SETTINGS ".center(menu_width - 2) + "|")
+        self.stdscr.addstr(start_y + 2, start_x, "+" + "-" * (menu_width - 2) + "+")
+        self.stdscr.attroff(curses.color_pair(7))
+        
+        for i, (key, label, action) in enumerate(menu_items):
+            y = start_y + 3 + i
+            self.stdscr.addstr(y, start_x, "|", curses.color_pair(7))
+            menu_text = f"[{key}] {label}"[:menu_width-4]
+            self.stdscr.addstr(y, start_x + 1, " " * (menu_width - 2), curses.color_pair(7))
+            self.stdscr.addstr(y, start_x + 2, menu_text, curses.color_pair(13) | curses.A_BOLD)
+            self.stdscr.addstr(y, start_x + menu_width - 1, "|", curses.color_pair(7))
+        
+        self.stdscr.attron(curses.color_pair(7))
+        self.stdscr.addstr(start_y + 3 + len(menu_items), start_x, "+" + "-" * (menu_width - 2) + "+")
+        self.stdscr.addstr(start_y + 4 + len(menu_items), start_x, "|" + " [q] Cancel ".center(menu_width - 2) + "|")
+        self.stdscr.addstr(start_y + 5 + len(menu_items), start_x, "+" + "-" * (menu_width - 2) + "+")
+        self.stdscr.attroff(curses.color_pair(7))
+        
+        self.stdscr.refresh()
+        
+        # Get selection
+        key = self.stdscr.getch()
+        
+        if key == ord('1'):
+            self.config.set_video_player('auto')
+            self.message = "Video player set to: auto"
+            self.message_color = curses.COLOR_GREEN
+        elif key == ord('2'):
+            self.config.set_video_player('buddy')
+            self.message = "Video player set to: buddy"
+            self.message_color = curses.COLOR_GREEN
+        elif key == ord('3'):
+            self.config.set_video_player('ncplayer')
+            self.message = "Video player set to: ncplayer"
+            self.message_color = curses.COLOR_GREEN
+
     def play_selected_video(self):
-        """Play the currently selected video file with buddy"""
+        """Play the currently selected video file with configured video player"""
         if self.selected_index >= len(self.entries):
             return
         
@@ -2966,35 +3075,66 @@ class FileManager:
             self.message_color = curses.COLOR_YELLOW
             return
         
-        # Check if buddy is available
+        # Determine which video player to use
+        player_pref = self.config.video_player
         buddy_path = shutil.which('buddy')
-        if not buddy_path:
-            self.message = "buddy not installed (video player)"
+        ncplayer_path = shutil.which('ncplayer')
+        
+        player_path = None
+        player_name = None
+        
+        if player_pref == 'buddy':
+            player_path = buddy_path
+            player_name = 'buddy'
+        elif player_pref == 'ncplayer':
+            player_path = ncplayer_path
+            player_name = 'ncplayer'
+        else:  # auto - try buddy first, then ncplayer
+            if buddy_path:
+                player_path = buddy_path
+                player_name = 'buddy'
+            elif ncplayer_path:
+                player_path = ncplayer_path
+                player_name = 'ncplayer'
+        
+        if not player_path:
+            self.message = "No video player found (install buddy or ncplayer)"
             self.message_color = curses.COLOR_RED
             return
         
         # Exit curses temporarily to play video
         curses.endwin()
         
+        # Store original signal handler and ignore SIGINT in parent
+        original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        
         try:
             print(f"\n{'='*70}")
             print(f"Playing: {entry['name']}")
+            print(f"Player: {player_name}")
             print(f"{'='*70}")
-            print("\nPress Ctrl+C to stop playback\n")
+            print("\nPress 'q' to stop playback (or Ctrl+C)\n")
             
-            # Run buddy with the video file
-            subprocess.run([buddy_path, entry['path']], check=False)
+            # Build command based on player
+            if player_name == 'ncplayer':
+                cmd = [player_path, '-k', entry['path']]  # -k for keyboard control
+            else:
+                cmd = [player_path, entry['path']]
+            
+            # Run video player - it will receive SIGINT, parent won't
+            process = subprocess.Popen(cmd, preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+            process.wait()
             
             print(f"\n{'='*70}")
             print("Press Enter to return to file manager...")
             print(f"{'='*70}")
+            
+            # Restore signal handler before input()
+            signal.signal(signal.SIGINT, original_sigint)
             input()
             
-        except KeyboardInterrupt:
-            print("\nPlayback stopped")
-            print("Press Enter to continue...")
-            input()
         except Exception as e:
+            signal.signal(signal.SIGINT, original_sigint)
             print(f"Error: {e}")
             print("Press Enter to continue...")
             input()

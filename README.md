@@ -487,14 +487,20 @@ file-sort                            # Interactive sorting in current directory
 **No external dependencies required.**
 
 ### 9. `video-player` - Terminal Video Player
-A standalone utility for playing videos directly in the terminal using buddy.
+A standalone utility for playing videos directly in the terminal. Supports **two video players** with configurable default:
+
+**Supported Players:**
+- **buddy** - Python-based player with true 24-bit color (https://github.com/JVSCHANDRADITHYA/buddy)
+- **ncplayer** - C-based player from notcurses library (https://github.com/dankamongmen/notcurses)
 
 **Features:**
-- **3 Render Modes:**
+- **Configurable player preference** - Set default to `auto`, `buddy`, or `ncplayer`
+- Settings stored in `~/.filemanager_config.json`
+- **buddy render modes:**
   - **half** (default) - Best quality using Unicode half-blocks, 2x vertical resolution
   - **ascii** - Classic ASCII art look with true-color tinting
   - **braille** - Highest spatial resolution using braille patterns
-- **3 Quality Levels:**
+- **buddy quality levels:**
   - Fast (nearest-neighbor sampling)
   - Balanced (4-tap supersample, default)
   - Best (full box filter)
@@ -503,35 +509,57 @@ A standalone utility for playing videos directly in the terminal using buddy.
 - Hide/show status bar
 - Interactive file selection
 - Works with all common video formats
+- **Ctrl+C stops video without exiting filemanager**
 
 **Usage examples:**
 ```bash
 video-player                         # Interactive playback in current directory
 ```
 
-**Keyboard shortcut in file manager:**
-- Press `V` on any video file to play it directly with buddy
+**Keyboard shortcuts in file manager:**
+- Press `V` on any video file to play it directly
+- Press `t` for Tools menu → `[7] Play Video` for interactive selection
+- Press `t` for Tools menu → `[s] Video Player Settings` to change player
 
-**Dependencies:** buddy terminal video player (https://github.com/JVSCHANDRADITHYA/buddy)
-
-**Quick install for buddy:**
+**Installing buddy (venv method for PEP 668 systems):**
 ```bash
-# Install Python dependencies
-pip install numpy imageio imageio-ffmpeg
-
-# Clone buddy
 git clone https://github.com/JVSCHANDRADITHYA/buddy
 cd buddy
+python3 -m venv venv
+venv/bin/pip install numpy imageio imageio-ffmpeg
 
-# Make available system-wide (Linux/macOS)
-chmod +x buddy.sh
-sudo ln -sf "$(pwd)/buddy.sh" /usr/local/bin/buddy
+# Create wrapper script
+cat > buddy-wrapper.sh << 'EOF'
+#!/bin/bash
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+"$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/ascii_play/cli.py" "$@"
+EOF
+
+chmod +x buddy-wrapper.sh
+sudo ln -sf "$(pwd)/buddy-wrapper.sh" /usr/local/bin/buddy
+```
+
+**Installing ncplayer (simpler, from package manager):**
+```bash
+# Debian/Ubuntu
+sudo apt install notcurses-bin
+
+# Arch Linux
+sudo pacman -S notcurses
+
+# macOS
+brew install notcurses
 ```
 
 **Requirements:**
-- Python 3.9 or later
-- Terminal with 24-bit true color support (Windows Terminal, iTerm2, Kitty, Alacritty, etc.)
-- numpy, imageio, imageio-ffmpeg packages
+- For buddy: Python 3.9+, terminal with 24-bit true color support
+- For ncplayer: Just the notcurses package
 
 ## 📖 Usage Guide
 
@@ -1017,7 +1045,7 @@ extract-and-convert -q
 
 ## 🔧 Configuration
 
-Bookmarks are stored in: `~/.filemanager_config.json`
+Settings are stored in: `~/.filemanager_config.json`
 
 Example config:
 ```json
@@ -1026,9 +1054,21 @@ Example config:
     "external": "/srv/dev-disk-by-uuid-dc4918d5-6597-465b-9567-ce442fbd8e2a",
     "projects": "/home/user/projects",
     "downloads": "/home/user/Downloads"
-  }
+  },
+  "video_player": "auto"
 }
 ```
+
+**Configuration options:**
+- `bookmarks` - Named directory shortcuts (managed via `b` key)
+- `video_player` - Preferred terminal video player:
+  - `"auto"` (default) - Try buddy first, fall back to ncplayer
+  - `"buddy"` - Use buddy (Python-based, more render options)
+  - `"ncplayer"` - Use ncplayer from notcurses (simpler, C-based)
+
+**Change video player via:**
+- Tools menu (`t`) → `[s] Video Player Settings`
+- Or edit the config file directly
 
 ## 🤝 Contributing
 
