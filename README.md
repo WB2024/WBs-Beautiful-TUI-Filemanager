@@ -231,8 +231,8 @@ git clone https://github.com/WB2024/WBs-Beautiful-TUI-Filemanager.git
 cd WBs-Beautiful-TUI-Filemanager
 
 # 2. Copy all utilities to system path
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort
 
 # 3. Run it!
 filemanager
@@ -246,6 +246,7 @@ filemanager
 - `extract-and-convert` - Combined extract archives + convert audio workflow
 - `image-convert` - Image format conversion utility (using ImageMagick)
 - `iso2god` - Xbox/Xbox 360 ISO to GOD converter (using iso2god-rs)
+- `file-sort` - File organization utility (sort by type, extension, size, date)
 
 ### Manual Installation
 
@@ -258,12 +259,13 @@ wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/extract-and-convert
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/image-convert
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/iso2god
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/file-sort
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort
 
 # 3. Move to PATH
-sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort /usr/local/bin/
 
 # 4. Run from anywhere
 filemanager
@@ -273,7 +275,7 @@ filemanager
 
 ```bash
 # Check if all utilities are installed correctly
-which filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert
+which filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort
 
 # Should output:
 # /usr/local/bin/filemanager
@@ -282,6 +284,8 @@ which filemanager extractfile fixperms audio-to-flac extract-and-convert image-c
 # /usr/local/bin/audio-to-flac
 # /usr/local/bin/extract-and-convert
 # /usr/local/bin/image-convert
+# /usr/local/bin/iso2god
+# /usr/local/bin/file-sort
 ```
 ## 🔄 Updating
 
@@ -297,8 +301,8 @@ cd /path/to/your/WBs-Beautiful-TUI-Filemanager
 git pull origin main
 
 # 3. Copy updated files to system path (replace old versions)
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort
 
 # 4. Verify the update
 filemanager
@@ -311,21 +315,26 @@ filemanager
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/filemanager -O filemanager
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/extractfile -O extractfile
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/fixperms -O fixperms
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/audio-to-flac -O audio-to-flac
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/extract-and-convert -O extract-and-convert
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/image-convert -O image-convert
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/iso2god -O iso2god
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/file-sort -O file-sort
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort
 
 # 3. Replace old versions in system path
-sudo mv filemanager extractfile fixperms /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort /usr/local/bin/
 
 # 4. Verify the update
 filemanager
 ```
 
 **Note:** Your bookmarks and configuration file (`~/.filemanager_config.json`) will be preserved during updates.
-## � Included Utilities
+## 📦 Included Utilities
 
-This package includes seven powerful command-line tools:
+This package includes eight powerful command-line tools:
 
 ### 1. `filemanager` - Interactive TUI File Manager
 The main application providing a beautiful terminal-based file browser with built-in text editor, audio quality inspector, and tools for navigation, bookmarks, archive extraction, and folder analysis.
@@ -452,7 +461,28 @@ chmod +x iso2god-x86_64-linux
 sudo mv iso2god-x86_64-linux /usr/local/bin/iso2god-rs
 ```
 
-## �📖 Usage Guide
+### 8. `file-sort` - File Organization Tool
+A standalone utility for sorting and organizing files in a directory by various criteria.
+
+**Features:**
+- **Sort by File Type** - Groups files into categories: Audio, Video, Images, Documents, Text, Code, Data, Web, Archives, Executables, Fonts, Ebooks, 3D Models, CAD, Torrents, Other
+- **Sort by Extension** - Creates folders for each file extension (MP3, JPG, PY, etc.)
+- **Sort by Size** - Groups files by size: Tiny (<100KB), Small (100KB-1MB), Medium (1MB-100MB), Large (100MB-1GB), Huge (>1GB)
+- **Sort by Date Modified** - Groups files by modification time: Today, Yesterday, This Week, This Month, This Year, or by year
+- **Sort by First Letter** - Alphabetical organization (A-Z, 0-9, Special characters)
+- Preview before sorting
+- Handles permission issues automatically
+- Sets 777 permissions on created folders and moved files
+- Handles filename collisions (appends _1, _2, etc.)
+
+**Usage examples:**
+```bash
+file-sort                            # Interactive sorting in current directory
+```
+
+**No external dependencies required.**
+
+## 📖 Usage Guide
 
 ### Basic Navigation
 
@@ -489,7 +519,7 @@ Quit:             q
 | `n` | Create new file or folder |
 | `R` | Rename current file or folder |
 | `o` | Open file operations menu |
-| `t` | Open tools menu (FLAC, image convert, extract) |
+| `t` | Open tools menu (FLAC, image convert, extract, file sort) |
 | `b` | Open bookmarks menu |
 | `p` | Fix permissions (777 recursive) |
 | `e` | Extract archives |
