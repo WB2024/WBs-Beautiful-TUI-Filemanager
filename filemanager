@@ -3044,6 +3044,15 @@ class FileManager:
 
     def _restore_curses(self):
         """Restore curses after running an external tool"""
+        # Ensure terminal is in a sane state before curses takes over
+        import sys
+        sys.stdout.write('\x1b[?1049l')  # Leave alternate screen if stuck
+        sys.stdout.write('\x1b[?25h')    # Show cursor
+        sys.stdout.write('\x1b[?1000l')  # Disable mouse tracking modes
+        sys.stdout.write('\x1b[?1002l')
+        sys.stdout.write('\x1b[?1003l')
+        sys.stdout.write('\x1b[?1006l')
+        sys.stdout.flush()
         self.stdscr = curses.initscr()
         curses.start_color()
         curses.use_default_colors()
@@ -3334,7 +3343,7 @@ class FileManager:
             self.message_color = curses.COLOR_RED
             return
         
-        # Exit curses temporarily to view image
+        # Exit curses temporarily
         curses.endwin()
         
         try:
@@ -3344,6 +3353,20 @@ class FileManager:
                 cwd=str(self.current_path),
                 preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
             process.wait()
+            
+            # Reset terminal state after pixel-index (it uses alternate screen, mouse, etc.)
+            import sys
+            sys.stdout.write('\x1b[?1049l')  # Leave alternate screen buffer
+            sys.stdout.write('\x1b[?25h')    # Show cursor
+            sys.stdout.write('\x1b[?1000l')  # Disable mouse tracking
+            sys.stdout.write('\x1b[?1002l')  # Disable mouse button tracking
+            sys.stdout.write('\x1b[?1003l')  # Disable all mouse tracking
+            sys.stdout.write('\x1b[?1006l')  # Disable SGR mouse mode
+            sys.stdout.flush()
+            
+            # Use os.system reset to fully clear terminal state
+            os.system('stty sane 2>/dev/null')
+            os.system('reset 2>/dev/null')
             
         except Exception as e:
             print(f"Error: {e}")
