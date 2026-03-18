@@ -1,0 +1,1038 @@
+#!/usr/bin/env python3
+"""
+Essentia Music Tagger
+Analyze audio files with Essentia ML models and write genre/mood tags.
+Stripped-down standalone version for WBs-Beautiful-TUI-Filemanager.
+Based on: https://github.com/WB2024/Essentia-to-Metadata
+"""
+
+import os
+import sys
+import json
+import argparse
+from pathlib import Path
+from datetime import datetime
+import platform
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+# Supported audio file extensions
+AUDIO_EXTENSIONS = {
+    '.flac', '.mp3', '.ogg', '.oga', '.opus',
+    '.m4a', '.m4b', '.mp4', '.aac',
+    '.wma', '.aiff', '.aif', '.wav',
+    '.wv', '.ape', '.mpc', '.mp+', '.dsf',
+}
+
+# Model directory (fixed)
+MODEL_DIR = os.path.expanduser('~/essentia_models')
+
+# Model files
+EMBEDDING_MODEL = f"{MODEL_DIR}/discogs-effnet-bs64-1.pb"
+GENRE_MODEL = f"{MODEL_DIR}/genre_discogs400-discogs-effnet-1.pb"
+GENRE_METADATA = f"{MODEL_DIR}/genre_discogs400-discogs-effnet-1.json"
+MOOD_MODEL = f"{MODEL_DIR}/mtg_jamendo_moodtheme-discogs-effnet-1.pb"
+MOOD_METADATA = f"{MODEL_DIR}/mtg_jamendo_moodtheme-discogs-effnet-1.json"
+
+
+def format_genre_tag(raw_genre, style='parent_child'):
+    """Format genre tags for better readability"""
+    if style == 'raw':
+        return raw_genre
+
+    if '---' in raw_genre:
+        parts = raw_genre.split('---')
+        parent = parts[0].strip()
+        child = parts[1].strip() if len(parts) > 1 else ''
+
+        if style == 'parent_child':
+            return f"{parent} - {child}" if child else parent
+        elif style == 'child_parent':
+            return f"{child} - {parent}" if child else parent
+        elif style == 'child_only':
+            return child if child else parent
+
+    return raw_genre
+
+
+def format_mood_tag(raw_mood):
+    """Format mood tags for better readability"""
+    return raw_mood.title()
+
+
+class Logger:
+    """Dual output to console and log file"""
+    def __init__(self, log_file):
+        self.log_file = log_file
+        self.file_handle = open(log_file, 'w', encoding='utf-8')
+        self.write_header()
+
+    def write_header(self):
+        header = f"""
+{'=' * 80}
+ESSENTIA MUSIC TAGGER - LOG FILE
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+{'=' * 80}
+
+"""
+        self.file_handle.write(header)
+        self.file_handle.flush()
+
+    def log(self, message, console=True, file=True):
+        if console:
+            print(message)
+        if file:
+            self.file_handle.write(message + '\n')
+            self.file_handle.flush()
+
+    def log_config(self, config, music_path):
+        if config.enable_genres and config.enable_moods:
+            mode_label = "Genres & Moods"
+        elif config.enable_genres:
+            mode_label = "Genres only"
+        else:
+            mode_label = "Moods only"
+
+        config_text = f"""
+CONFIGURATION:
+{'-' * 80}
+Target Directory: {music_path}
+Model Directory: {MODEL_DIR}
+Analysis Mode: {mode_label}
+"""
+        if config.enable_genres:
+            config_text += f"""Genre Settings:
+  - Number of genres: {config.top_n_genres}
+  - Confidence threshold: {config.genre_threshold:.1%}
+  - Genre format: {config.genre_format}
+"""
+        if config.enable_moods:
+            config_text += f"""Mood Settings:
+  - Confidence threshold: {config.mood_threshold:.1%}
+"""
+        config_text += f"""Other Settings:
+  - Dry run mode: {config.dry_run}
+  - Write confidence tags: {config.write_confidence_tags}
+  - Overwrite existing: {config.overwrite_existing}
+  - Verbose output: {config.verbose}
+{'=' * 80}
+
+"""
+        self.file_handle.write(config_text)
+        self.file_handle.flush()
+
+    def log_analysis(self, filepath, results, relative_path):
+        log_entry = f"""
+FILE: {relative_path}
+{'-' * 80}
+"""
+        if results.get('genres'):
+            log_entry += "GENRES (raw predictions):\n"
+            for g in results['genres']:
+                log_entry += f"  • {g['label']}: {g['confidence']:.2%}\n"
+        elif 'genres' not in results:
+            log_entry += "GENRES: Disabled\n"
+        else:
+            log_entry += "GENRES: None passed threshold\n"
+
+        if results.get('formatted_genres'):
+            log_entry += "\nGENRES (formatted for tags):\n"
+            for fg in results['formatted_genres']:
+                log_entry += f"  • {fg}\n"
+
+        if results.get('all_genres_debug'):
+            log_entry += "\nALL GENRE PREDICTIONS (top 10):\n"
+            for label, conf in results['all_genres_debug']:
+                log_entry += f"  • {label}: {conf:.2%}\n"
+
+        if results.get('moods'):
+            log_entry += f"\nMOODS (raw predictions - {len(results['moods'])} total):\n"
+            for m in results['moods']:
+                log_entry += f"  • {m['label']}: {m['confidence']:.2%}\n"
+        elif 'moods' not in results:
+            log_entry += "\nMOODS: Disabled\n"
+        else:
+            log_entry += "\nMOODS: None passed threshold\n"
+
+        if results.get('formatted_moods'):
+            log_entry += "\nMOODS (formatted for tags):\n"
+            for fm in results['formatted_moods']:
+                log_entry += f"  • {fm}\n"
+
+        if results.get('all_moods_debug'):
+            log_entry += "\nALL MOOD PREDICTIONS (top 10):\n"
+            for label, conf in results['all_moods_debug'][:10]:
+                log_entry += f"  • {label}: {conf:.2%}\n"
+
+        log_entry += f"\n{'=' * 80}\n"
+        self.file_handle.write(log_entry)
+        self.file_handle.flush()
+
+    def log_summary(self, processed, errors, skipped):
+        summary = f"""
+{'=' * 80}
+PROCESSING SUMMARY
+{'=' * 80}
+Total Processed: {processed}
+Errors: {errors}
+Skipped: {skipped}
+Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+{'=' * 80}
+"""
+        self.file_handle.write(summary)
+        self.file_handle.flush()
+
+    def close(self):
+        self.file_handle.close()
+
+
+class Config:
+    """Runtime configuration"""
+    def __init__(self):
+        self.dry_run = True
+        self.enable_genres = True
+        self.enable_moods = True
+        self.top_n_genres = 3
+        self.genre_threshold = 0.15
+        self.mood_threshold = 0.005
+        self.write_confidence_tags = True
+        self.overwrite_existing = False
+        self.verbose = True
+        self.log_file = None
+        self.genre_format = 'parent_child'
+
+
+class EssentiaTagger:
+    """Main tagger workflow - standalone tool for the filemanager"""
+
+    def __init__(self):
+        self.current_dir = os.getcwd()
+
+    def print_header(self, text):
+        print(f"\n{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{text.center(70)}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
+
+    def print_success(self, text):
+        print(f"{Colors.OKGREEN}✓ {text}{Colors.ENDC}")
+
+    def print_error(self, text):
+        print(f"{Colors.FAIL}✗ {text}{Colors.ENDC}")
+
+    def print_info(self, text):
+        print(f"{Colors.OKCYAN}ℹ {text}{Colors.ENDC}")
+
+    def print_warning(self, text):
+        print(f"{Colors.WARNING}⚠ {text}{Colors.ENDC}")
+
+    def yes_no_prompt(self, question, default=True):
+        default_text = "Y/n" if default else "y/N"
+        while True:
+            response = input(f"{Colors.OKBLUE}{question} ({default_text}): {Colors.ENDC}").lower().strip()
+            if response == '':
+                return default
+            if response in ['y', 'yes']:
+                return True
+            elif response in ['n', 'no']:
+                return False
+            else:
+                self.print_warning("Please answer 'y' or 'n'")
+
+    def get_int_input(self, prompt, default, min_val=None, max_val=None):
+        while True:
+            user_input = input(f"{Colors.OKBLUE}{prompt} [{default}]: {Colors.ENDC}").strip()
+            if not user_input:
+                return default
+            try:
+                value = int(user_input)
+                if min_val is not None and value < min_val:
+                    self.print_warning(f"Must be at least {min_val}")
+                    continue
+                if max_val is not None and value > max_val:
+                    self.print_warning(f"Must be at most {max_val}")
+                    continue
+                return value
+            except ValueError:
+                self.print_warning("Please enter a valid number")
+
+    def get_float_input(self, prompt, default, min_val=None, max_val=None):
+        while True:
+            user_input = input(f"{Colors.OKBLUE}{prompt} [{default}]: {Colors.ENDC}").strip()
+            if not user_input:
+                return default
+            try:
+                value = float(user_input)
+                if min_val is not None and value < min_val:
+                    self.print_warning(f"Must be at least {min_val}")
+                    continue
+                if max_val is not None and value > max_val:
+                    self.print_warning(f"Must be at most {max_val}")
+                    continue
+                return value
+            except ValueError:
+                self.print_warning("Please enter a valid number")
+
+    def check_dependencies(self):
+        """Check if required Python packages and models are available"""
+        # Check essentia
+        try:
+            import essentia
+            essentia.log.warningActive = False
+            from essentia.standard import MonoLoader, TensorflowPredictEffnetDiscogs, TensorflowPredict2D
+            self.print_success("Essentia library found")
+        except ImportError:
+            self.print_error("Essentia library not installed")
+            self.print_info("Install with: pip install essentia-tensorflow")
+            return False
+
+        # Check mutagen
+        try:
+            import mutagen
+            self.print_success("Mutagen library found")
+        except ImportError:
+            self.print_error("Mutagen library not installed")
+            self.print_info("Install with: pip install mutagen")
+            return False
+
+        # Check numpy
+        try:
+            import numpy
+            self.print_success("NumPy library found")
+        except ImportError:
+            self.print_error("NumPy library not installed")
+            self.print_info("Install with: pip install numpy")
+            return False
+
+        # Check models
+        models_ok = True
+        for model_file in [EMBEDDING_MODEL, GENRE_MODEL, GENRE_METADATA, MOOD_MODEL, MOOD_METADATA]:
+            if not os.path.exists(model_file):
+                self.print_error(f"Model not found: {model_file}")
+                models_ok = False
+
+        if not models_ok:
+            self.print_error("Essentia models not downloaded")
+            self.print_info(f"Models should be in: {MODEL_DIR}")
+            self.print_info("Download models with:")
+            print(f"  {Colors.OKCYAN}mkdir -p {MODEL_DIR}{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}cd {MODEL_DIR}{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}wget https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bs64-1.pb{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}wget https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}wget https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}wget https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.pb{Colors.ENDC}")
+            print(f"  {Colors.OKCYAN}wget https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json{Colors.ENDC}")
+            return False
+
+        self.print_success("All models found")
+        return True
+
+    def scan_directory(self):
+        """Scan current directory for audio files (recursively)"""
+        self.print_header("Scanning Directory")
+        self.print_info(f"Directory: {self.current_dir}")
+
+        root = Path(self.current_dir)
+        all_files = list(root.rglob('*'))
+        audio_files = sorted([f for f in all_files if f.suffix.lower() in AUDIO_EXTENSIONS])
+
+        if not audio_files:
+            self.print_warning("No audio files found in current directory")
+            return []
+
+        self.print_success(f"Found {len(audio_files)} audio file(s)")
+
+        # Show summary by extension
+        ext_counts = {}
+        for f in audio_files:
+            ext = f.suffix.lower()
+            ext_counts[ext] = ext_counts.get(ext, 0) + 1
+
+        print(f"\n{Colors.BOLD}File types:{Colors.ENDC}")
+        for ext, count in sorted(ext_counts.items(), key=lambda x: -x[1]):
+            print(f"  {ext}: {count}")
+
+        return audio_files
+
+    def configure_settings(self):
+        """Interactive configuration"""
+        config = Config()
+
+        self.print_header("Configuration")
+        print(f"{Colors.BOLD}Press Enter to accept defaults shown in [brackets]{Colors.ENDC}\n")
+
+        # Dry run mode
+        print(f"{Colors.BOLD}🧪 DRY RUN MODE{Colors.ENDC}")
+        print("  Test mode - analyzes files but doesn't write tags")
+        print("  Recommended: Enable for first run to see results")
+        config.dry_run = self.yes_no_prompt("Enable dry run mode?", default=True)
+
+        # Analysis mode
+        print(f"\n{Colors.BOLD}🎯 ANALYSIS MODE{Colors.ENDC}")
+        print("  1 = Genres & Moods (both)")
+        print("  2 = Genres only")
+        print("  3 = Moods only")
+        mode_choice = self.get_int_input("Analysis mode", default=1, min_val=1, max_val=3)
+        config.enable_genres = mode_choice in (1, 2)
+        config.enable_moods = mode_choice in (1, 3)
+
+        # Genre settings
+        if config.enable_genres:
+            print(f"\n{Colors.BOLD}🎸 GENRE SETTINGS{Colors.ENDC}")
+            print("  Number of genre tags to write per song (1-10)")
+            config.top_n_genres = self.get_int_input("Number of genres", default=3, min_val=1, max_val=10)
+
+            print(f"\n  Genre confidence threshold (as percentage)")
+            print("  5% = inclusive | 15% = balanced | 25% = strict")
+            threshold_pct = self.get_float_input("Genre threshold (%)", default=15, min_val=1, max_val=50)
+            config.genre_threshold = threshold_pct / 100.0
+
+            print(f"\n  Genre tag formatting:")
+            print("  1 = 'Rock - Alternative Rock' (parent - child)")
+            print("  2 = 'Alternative Rock - Rock' (child - parent)")
+            print("  3 = 'Alternative Rock' (child only)")
+            print("  4 = 'Rock---Alternative Rock' (raw)")
+            format_choice = self.get_int_input("Genre format", default=1, min_val=1, max_val=4)
+            format_map = {1: 'parent_child', 2: 'child_parent', 3: 'child_only', 4: 'raw'}
+            config.genre_format = format_map[format_choice]
+
+        # Mood settings
+        if config.enable_moods:
+            print(f"\n{Colors.BOLD}😊 MOOD SETTINGS{Colors.ENDC}")
+            print("  Mood predictions are typically MUCH lower confidence than genres")
+            print("  0.5% = inclusive (recommended) | 1% = balanced | 3% = strict")
+            mood_threshold_pct = self.get_float_input("Mood threshold (%)", default=0.5, min_val=0.01, max_val=20)
+            config.mood_threshold = mood_threshold_pct / 100.0
+
+        # Confidence tags
+        print(f"\n{Colors.BOLD}📊 CONFIDENCE SCORES{Colors.ENDC}")
+        print("  Write confidence percentages to additional tags")
+        config.write_confidence_tags = self.yes_no_prompt("Write confidence score tags?", default=True)
+
+        # Overwrite existing
+        print(f"\n{Colors.BOLD}♻️  EXISTING TAGS{Colors.ENDC}")
+        config.overwrite_existing = self.yes_no_prompt("Overwrite existing genre/mood tags?", default=False)
+
+        # Verbose
+        print(f"\n{Colors.BOLD}📢 VERBOSE OUTPUT{Colors.ENDC}")
+        config.verbose = self.yes_no_prompt("Enable verbose output?", default=True)
+
+        return config
+
+    def show_config_summary(self, config, audio_count):
+        """Display final configuration before processing"""
+        self.print_header("Final Settings")
+        print(f"📂 Target directory: {self.current_dir}")
+        print(f"🎵 Audio files: {audio_count}")
+        print(f"📁 Model directory: {MODEL_DIR}")
+
+        if config.enable_genres and config.enable_moods:
+            print(f"\n🎯 Analysis mode: Genres & Moods")
+        elif config.enable_genres:
+            print(f"\n🎯 Analysis mode: Genres only")
+        else:
+            print(f"\n🎯 Analysis mode: Moods only")
+
+        if config.enable_genres:
+            print(f"\n🎸 Genre Settings:")
+            print(f"   • Number of genres: {config.top_n_genres}")
+            print(f"   • Confidence threshold: {config.genre_threshold:.2%}")
+            print(f"   • Format style: {config.genre_format}")
+        if config.enable_moods:
+            print(f"\n😊 Mood Settings:")
+            print(f"   • Confidence threshold: {config.mood_threshold:.2%}")
+
+        print(f"\n📊 Other Settings:")
+        print(f"   • Dry run mode: {config.dry_run}")
+        print(f"   • Write confidence tags: {config.write_confidence_tags}")
+        print(f"   • Overwrite existing: {config.overwrite_existing}")
+        print(f"   • Verbose output: {config.verbose}")
+
+        if config.dry_run:
+            print(f"\n{Colors.WARNING}{Colors.BOLD}⚠️  DRY RUN MODE - No files will be modified!{Colors.ENDC}")
+        else:
+            print(f"\n{Colors.FAIL}{Colors.BOLD}⚠️  LIVE MODE - Files WILL be modified!{Colors.ENDC}")
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        config.log_file = f"essentia_tagger_{timestamp}.log"
+        print(f"\n📝 Log file: {config.log_file}")
+
+    def process_files(self, audio_files, config):
+        """Load models and process all audio files"""
+        import numpy as np
+        from essentia.standard import MonoLoader, TensorflowPredictEffnetDiscogs, TensorflowPredict2D
+        import mutagen
+        from mutagen.flac import FLAC
+        from mutagen.id3 import ID3, TCON, COMM
+        from mutagen.oggvorbis import OggVorbis
+        from mutagen.oggopus import OggOpus
+        from mutagen.mp4 import MP4
+        from mutagen.aiff import AIFF
+        from mutagen.asf import ASF
+
+        logger = Logger(config.log_file)
+        logger.log_config(config, self.current_dir)
+
+        # Load models
+        logger.log("\n🔄 Loading models...")
+
+        embedding_model = TensorflowPredictEffnetDiscogs(
+            graphFilename=EMBEDDING_MODEL,
+            output="PartitionedCall:1"
+        )
+
+        genre_model = None
+        genre_labels = None
+        if config.enable_genres:
+            genre_model = TensorflowPredict2D(
+                graphFilename=GENRE_MODEL,
+                input="serving_default_model_Placeholder",
+                output="PartitionedCall"
+            )
+            with open(GENRE_METADATA, 'r') as f:
+                metadata = json.load(f)
+                genre_labels = metadata['classes']
+            logger.log(f"   ✅ Loaded {len(genre_labels)} genre classes")
+        else:
+            logger.log("   ⏭️  Genre analysis disabled")
+
+        mood_model = None
+        mood_labels = None
+        if config.enable_moods and os.path.exists(MOOD_MODEL):
+            logger.log("   Loading mood model...")
+            try:
+                mood_model = TensorflowPredict2D(
+                    graphFilename=MOOD_MODEL,
+                    input="model/Placeholder",
+                    output="model/Sigmoid"
+                )
+                with open(MOOD_METADATA, 'r') as f:
+                    metadata = json.load(f)
+                    mood_labels = metadata['classes']
+                logger.log(f"   ✅ Loaded {len(mood_labels)} mood classes")
+            except Exception as e:
+                logger.log(f"   ⚠️  Could not load mood model: {e}")
+                mood_model = None
+        elif not config.enable_moods:
+            logger.log("   ⏭️  Mood analysis disabled")
+        else:
+            logger.log("   ⚠️  Mood model not found")
+
+        logger.log("   ✅ Models loaded successfully!\n")
+
+        root = Path(self.current_dir)
+        processed = 0
+        errors = 0
+        skipped = 0
+
+        logger.log(f"{'=' * 70}\n")
+
+        for i, filepath in enumerate(audio_files, 1):
+            try:
+                relative_path = filepath.relative_to(root)
+            except ValueError:
+                relative_path = filepath.name
+
+            logger.log(f"[{i}/{len(audio_files)}] {relative_path}")
+
+            # Analyze
+            try:
+                audio = MonoLoader(
+                    filename=str(filepath),
+                    sampleRate=16000,
+                    resampleQuality=4
+                )()
+
+                embeddings = embedding_model(audio)
+                results = {}
+
+                # Predict genres
+                if genre_model:
+                    genre_predictions = genre_model(embeddings)
+                    genre_activations = np.mean(genre_predictions, axis=0)
+
+                    top_indices = np.argsort(genre_activations)[::-1][:config.top_n_genres * 2]
+                    genres = []
+                    for idx in top_indices:
+                        if len(genres) >= config.top_n_genres:
+                            break
+                        if genre_activations[idx] >= config.genre_threshold:
+                            genres.append({
+                                'label': genre_labels[idx],
+                                'confidence': float(genre_activations[idx])
+                            })
+
+                    if not genres:
+                        top_idx = np.argmax(genre_activations)
+                        genres.append({
+                            'label': genre_labels[top_idx],
+                            'confidence': float(genre_activations[top_idx])
+                        })
+
+                    results['genres'] = genres
+                    results['formatted_genres'] = [
+                        format_genre_tag(g['label'], style=config.genre_format)
+                        for g in genres
+                    ]
+
+                    all_top_indices = np.argsort(genre_activations)[::-1][:10]
+                    results['all_genres_debug'] = [
+                        (genre_labels[idx], float(genre_activations[idx]))
+                        for idx in all_top_indices
+                    ]
+
+                # Predict moods
+                if mood_model:
+                    mood_predictions = mood_model(embeddings)
+                    mood_activations = np.mean(mood_predictions, axis=0)
+
+                    moods = []
+                    for idx, activation in enumerate(mood_activations):
+                        if activation >= config.mood_threshold:
+                            moods.append({
+                                'label': mood_labels[idx],
+                                'confidence': float(activation)
+                            })
+
+                    moods = sorted(moods, key=lambda x: x['confidence'], reverse=True)
+                    results['moods'] = moods[:5]
+
+                    results['formatted_moods'] = [
+                        format_mood_tag(m['label'])
+                        for m in results['moods']
+                    ]
+
+                    results['all_moods_debug'] = sorted(
+                        [(mood_labels[idx], float(mood_activations[idx]))
+                         for idx in range(len(mood_activations))],
+                        key=lambda x: x[1], reverse=True
+                    )
+
+                # Print results
+                if config.enable_genres:
+                    if results.get('genres'):
+                        genre_list = [f"{g['label']} ({g['confidence']:.1%})" for g in results['genres']]
+                        logger.log(f"     🎸 Raw: {', '.join(genre_list)}")
+                    if results.get('formatted_genres'):
+                        logger.log(f"     🎸 Formatted: {', '.join(results['formatted_genres'])}")
+
+                if config.enable_moods:
+                    if results.get('moods'):
+                        mood_list = [f"{m['label']} ({m['confidence']:.1%})" for m in results['moods'][:3]]
+                        logger.log(f"     😊 Raw: {', '.join(mood_list)}")
+                    if results.get('formatted_moods'):
+                        logger.log(f"     😊 Formatted: {', '.join(results['formatted_moods'][:3])}")
+                    elif results.get('moods') is not None and len(results.get('moods', [])) == 0:
+                        logger.log(f"     😊 Moods: None above threshold ({config.mood_threshold:.2%})")
+
+                if config.verbose and results.get('all_genres_debug'):
+                    top_5 = ', '.join([f"{label} ({conf:.1%})" for label, conf in results['all_genres_debug'][:5]])
+                    logger.log(f"     📊 Top 5 genres: {top_5}", console=False)
+
+                logger.log_analysis(filepath, results, relative_path)
+
+                # Write tags
+                self._write_tags(filepath, results, config, logger, mutagen, FLAC, ID3, TCON, COMM,
+                                 OggVorbis, OggOpus, MP4, AIFF, ASF)
+
+                if config.dry_run:
+                    tag_info = []
+                    if config.enable_genres and results.get('formatted_genres'):
+                        tag_info.append(f"Genres: {', '.join(results['formatted_genres'])}")
+                    if config.enable_moods and results.get('formatted_moods'):
+                        tag_info.append(f"Moods: {', '.join(results['formatted_moods'][:3])}")
+                    logger.log(f"     [DRY RUN] Would write: {' | '.join(tag_info)}")
+                else:
+                    logger.log("     ✅ Tags written")
+
+                processed += 1
+
+            except Exception as e:
+                logger.log(f"     ⚠️  Error: {e}")
+                errors += 1
+
+            logger.log("")
+
+        # Summary
+        logger.log(f"\n{'=' * 70}")
+        logger.log(f"📊 SUMMARY")
+        logger.log(f"{'=' * 70}")
+        logger.log(f"✅ Processed: {processed}")
+        logger.log(f"❌ Errors: {errors}")
+        logger.log(f"⏭️  Skipped: {skipped}")
+
+        logger.log_summary(processed, errors, skipped)
+        logger.log(f"\n📝 Full log saved to: {config.log_file}")
+        logger.close()
+
+    def _write_tags(self, filepath, results, config, logger, mutagen, FLAC, ID3, TCON, COMM,
+                    OggVorbis, OggOpus, MP4, AIFF, ASF):
+        """Write analysis results to audio file tags"""
+        if config.dry_run:
+            return
+
+        try:
+            file_ext = filepath.suffix.lower()
+
+            if file_ext == '.flac':
+                audio = FLAC(filepath)
+                tags_written = self._write_vorbis_comments(audio, results, config)
+                if tags_written:
+                    audio.save()
+            elif file_ext == '.mp3':
+                try:
+                    audio = ID3(filepath)
+                except Exception:
+                    audio = ID3()
+                self._write_id3_tags(audio, results, config, TCON, COMM)
+                audio.save(filepath)
+            elif file_ext in ('.ogg', '.oga'):
+                audio = OggVorbis(filepath)
+                tags_written = self._write_vorbis_comments(audio, results, config)
+                if tags_written:
+                    audio.save()
+            elif file_ext == '.opus':
+                audio = OggOpus(filepath)
+                tags_written = self._write_vorbis_comments(audio, results, config)
+                if tags_written:
+                    audio.save()
+            elif file_ext in ('.m4a', '.m4b', '.mp4', '.aac'):
+                audio = MP4(filepath)
+                self._write_mp4_tags(audio, results, config, mutagen)
+            elif file_ext == '.wma':
+                audio = ASF(filepath)
+                self._write_wma_tags(audio, results, config)
+            elif file_ext in ('.aiff', '.aif'):
+                audio = AIFF(filepath)
+                if audio.tags is None:
+                    audio.add_tags()
+                self._write_id3_tags(audio.tags, results, config, TCON, COMM)
+                audio.save()
+            elif file_ext in ('.wav', '.dsf'):
+                audio = mutagen.File(filepath)
+                if audio is None:
+                    return
+                if audio.tags is None:
+                    audio.add_tags()
+                self._write_id3_tags(audio.tags, results, config, TCON, COMM)
+                audio.save()
+            elif file_ext in ('.wv', '.ape', '.mpc', '.mp+'):
+                self._write_apev2_tags(filepath, results, config, mutagen)
+
+        except Exception as e:
+            logger.log(f"     ⚠️  Error writing tags: {e}")
+
+    def _write_vorbis_comments(self, audio, results, config):
+        """Write Vorbis comments (FLAC, OGG, Opus)"""
+        tags_written = []
+
+        if config.enable_genres and results.get('formatted_genres'):
+            if config.overwrite_existing or 'GENRE' not in audio:
+                genre_str = '; '.join(results['formatted_genres'])
+                audio['GENRE'] = genre_str
+                tags_written.append('GENRE')
+
+                if config.write_confidence_tags and results.get('genres'):
+                    genre_details = [f"{g['label']}: {g['confidence']:.2%}" for g in results['genres']]
+                    audio['ESSENTIA_GENRE'] = f"Essentia: {', '.join(genre_details)}"
+                    tags_written.append('ESSENTIA_GENRE')
+
+        if config.enable_moods and results.get('formatted_moods'):
+            if config.overwrite_existing or 'MOOD' not in audio:
+                mood_str = '; '.join(results['formatted_moods'][:3])
+                audio['MOOD'] = mood_str
+                tags_written.append('MOOD')
+
+                if config.write_confidence_tags and results.get('moods'):
+                    mood_details = [f"{m['label']}: {m['confidence']:.2%}" for m in results['moods'][:3]]
+                    audio['ESSENTIA_MOOD'] = f"Essentia: {', '.join(mood_details)}"
+                    tags_written.append('ESSENTIA_MOOD')
+
+        return tags_written
+
+    def _write_id3_tags(self, tags, results, config, TCON, COMM):
+        """Write ID3v2 tags (MP3, AIFF, WAV, DSF)"""
+        if config.enable_genres and results.get('formatted_genres'):
+            has_existing_genre = bool(tags.getall('TCON'))
+            if config.overwrite_existing or not has_existing_genre:
+                genre_str = '; '.join(results['formatted_genres'])
+                tags.delall('TCON')
+                tags.add(TCON(encoding=3, text=genre_str))
+
+                if config.write_confidence_tags and results.get('genres'):
+                    genre_details = [f"{g['label']}: {g['confidence']:.2%}" for g in results['genres']]
+                    confidence_str = ', '.join(genre_details)
+                    tags.delall('COMM::eng')
+                    tags.add(COMM(
+                        encoding=3,
+                        lang='eng',
+                        desc='Essentia Genre',
+                        text=confidence_str
+                    ))
+
+        if config.enable_moods and results.get('formatted_moods'):
+            mood_str = '; '.join(results['formatted_moods'][:3])
+            tags.add(COMM(
+                encoding=3,
+                lang='eng',
+                desc='Essentia Mood',
+                text=mood_str
+            ))
+
+    def _write_mp4_tags(self, audio, results, config, mutagen):
+        """Write MP4/M4A/AAC tags"""
+        tags_written = []
+
+        if config.enable_genres and results.get('formatted_genres'):
+            has_existing = '\xa9gen' in audio.tags if audio.tags else False
+            if config.overwrite_existing or not has_existing:
+                genre_str = '; '.join(results['formatted_genres'])
+                audio['\xa9gen'] = [genre_str]
+                tags_written.append('genre')
+
+                if config.write_confidence_tags and results.get('genres'):
+                    genre_details = [f"{g['label']}: {g['confidence']:.2%}" for g in results['genres']]
+                    audio['\xa9cmt'] = [f"Essentia Genre: {', '.join(genre_details)}"]
+
+        if config.enable_moods and results.get('formatted_moods'):
+            mood_str = '; '.join(results['formatted_moods'][:3])
+            audio['----:com.apple.iTunes:MOOD'] = [
+                mutagen.mp4.MP4FreeForm(mood_str.encode('utf-8'),
+                                        dataformat=mutagen.mp4.AtomDataType.UTF8)
+            ]
+            tags_written.append('MOOD')
+
+        if tags_written:
+            audio.save()
+
+    def _write_wma_tags(self, audio, results, config):
+        """Write WMA/ASF tags"""
+        tags_written = []
+
+        if config.enable_genres and results.get('formatted_genres'):
+            has_existing = 'WM/Genre' in audio if audio.tags else False
+            if config.overwrite_existing or not has_existing:
+                genre_str = '; '.join(results['formatted_genres'])
+                audio['WM/Genre'] = genre_str
+                tags_written.append('WM/Genre')
+
+        if config.enable_moods and results.get('formatted_moods'):
+            mood_str = '; '.join(results['formatted_moods'][:3])
+            audio['WM/Mood'] = mood_str
+            tags_written.append('WM/Mood')
+
+        if tags_written:
+            audio.save()
+
+    def _write_apev2_tags(self, filepath, results, config, mutagen):
+        """Write APEv2 tags (WavPack, APE, Musepack)"""
+        try:
+            audio = mutagen.File(filepath)
+            if audio is None:
+                return
+            if audio.tags is None:
+                audio.add_tags()
+        except Exception:
+            return
+
+        tags_written = []
+
+        if config.enable_genres and results.get('formatted_genres'):
+            has_existing = 'Genre' in audio.tags
+            if config.overwrite_existing or not has_existing:
+                genre_str = '; '.join(results['formatted_genres'])
+                audio.tags['Genre'] = genre_str
+                tags_written.append('Genre')
+
+                if config.write_confidence_tags and results.get('genres'):
+                    genre_details = [f"{g['label']}: {g['confidence']:.2%}" for g in results['genres']]
+                    audio.tags['Essentia Genre'] = f"Essentia: {', '.join(genre_details)}"
+
+        if config.enable_moods and results.get('formatted_moods'):
+            mood_str = '; '.join(results['formatted_moods'][:3])
+            audio.tags['Mood'] = mood_str
+            tags_written.append('Mood')
+
+        if tags_written:
+            audio.save()
+
+    def run(self):
+        """Main workflow"""
+        self.print_header("Essentia Music Tagger")
+        self.print_info("Analyze audio with ML models and write genre/mood tags")
+        self.print_info("Based on: https://github.com/WB2024/Essentia-to-Metadata")
+
+        # Check dependencies
+        print()
+        if not self.check_dependencies():
+            return
+
+        # Scan directory
+        audio_files = self.scan_directory()
+        if not audio_files:
+            return
+
+        # Confirm
+        if not self.yes_no_prompt(f"\nProceed with tagging {len(audio_files)} file(s)?", default=True):
+            self.print_info("Cancelled")
+            return
+
+        # Configure
+        config = self.configure_settings()
+
+        # Show summary
+        self.show_config_summary(config, len(audio_files))
+
+        if not config.dry_run:
+            if not self.yes_no_prompt("\nReady to proceed?", default=True):
+                self.print_info("Cancelled")
+                return
+
+        # Process
+        self.print_header(f"Processing {len(audio_files)} File(s)")
+        self.process_files(audio_files, config)
+
+        self.print_header("Tagging Complete")
+
+
+def parse_arguments():
+    """Parse command-line arguments for automated mode"""
+    parser = argparse.ArgumentParser(
+        description='Analyze audio files with Essentia ML and write genre/mood tags',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Interactive mode (run in current directory)
+  essentia-tagger
+
+  # Automated mode with path
+  essentia-tagger /path/to/music --auto
+
+  # Custom settings
+  essentia-tagger /path/to/music --auto --genres 4 --genre-threshold 20
+
+  # Dry run
+  essentia-tagger /path/to/music --auto --dry-run
+
+  # Single file
+  essentia-tagger /path/to/song.flac --auto --single-file
+"""
+    )
+
+    parser.add_argument('path', nargs='?', help='Path to music file or directory')
+    parser.add_argument('--auto', '-a', action='store_true', help='Non-interactive mode')
+    parser.add_argument('--single-file', '-f', action='store_true', help='Process a single file')
+    parser.add_argument('--genres', '-g', type=int, default=3, metavar='N', help='Number of genres (default: 3)')
+    parser.add_argument('--genre-threshold', '-gt', type=float, default=15.0, metavar='PCT', help='Genre threshold %% (default: 15)')
+    parser.add_argument('--genre-format', '-gf', choices=['parent_child', 'child_parent', 'child_only', 'raw'], default='parent_child')
+    parser.add_argument('--no-genres', action='store_true', help='Disable genre analysis')
+    parser.add_argument('--no-moods', action='store_true', help='Disable mood analysis')
+    parser.add_argument('--mood-threshold', '-mt', type=float, default=0.5, metavar='PCT', help='Mood threshold %% (default: 0.5)')
+    parser.add_argument('--dry-run', '-d', action='store_true', help='Don\'t write tags')
+    parser.add_argument('--no-confidence-tags', action='store_true', help='Skip confidence tags')
+    parser.add_argument('--overwrite', '-o', action='store_true', help='Overwrite existing tags')
+    parser.add_argument('--quiet', '-q', action='store_true', help='Minimal output')
+    parser.add_argument('--log-dir', type=str, default=None, metavar='DIR', help='Log file directory')
+    parser.add_argument('--model-dir', type=str, default=None, metavar='DIR', help='Essentia models directory')
+
+    return parser.parse_args()
+
+
+def main():
+    """Entry point"""
+    args = parse_arguments()
+
+    if args.auto or args.single_file:
+        # Automated/CLI mode
+        if not args.path:
+            print(f"{Colors.FAIL}✗ Error: Path is required in automated mode{Colors.ENDC}")
+            print("  Use: essentia-tagger /path/to/music --auto")
+            sys.exit(1)
+
+        if args.no_genres and args.no_moods:
+            print(f"{Colors.FAIL}✗ Error: Cannot disable both genres and moods{Colors.ENDC}")
+            sys.exit(1)
+
+        # Update model dir if specified
+        global MODEL_DIR, EMBEDDING_MODEL, GENRE_MODEL, GENRE_METADATA, MOOD_MODEL, MOOD_METADATA
+        if args.model_dir:
+            MODEL_DIR = os.path.expanduser(args.model_dir)
+            EMBEDDING_MODEL = f"{MODEL_DIR}/discogs-effnet-bs64-1.pb"
+            GENRE_MODEL = f"{MODEL_DIR}/genre_discogs400-discogs-effnet-1.pb"
+            GENRE_METADATA = f"{MODEL_DIR}/genre_discogs400-discogs-effnet-1.json"
+            MOOD_MODEL = f"{MODEL_DIR}/mtg_jamendo_moodtheme-discogs-effnet-1.pb"
+            MOOD_METADATA = f"{MODEL_DIR}/mtg_jamendo_moodtheme-discogs-effnet-1.json"
+
+        config = Config()
+        config.dry_run = args.dry_run
+        config.enable_genres = not args.no_genres
+        config.enable_moods = not args.no_moods
+        config.top_n_genres = args.genres
+        config.genre_threshold = args.genre_threshold / 100.0
+        config.mood_threshold = args.mood_threshold / 100.0
+        config.write_confidence_tags = not args.no_confidence_tags
+        config.overwrite_existing = args.overwrite
+        config.verbose = not args.quiet
+        config.genre_format = args.genre_format
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_filename = f"essentia_tagger_{timestamp}.log"
+        if args.log_dir:
+            log_dir = Path(args.log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            config.log_file = str(log_dir / log_filename)
+        else:
+            config.log_file = log_filename
+
+        music_path = os.path.expanduser(args.path)
+
+        tagger = EssentiaTagger()
+        tagger.current_dir = music_path if not args.single_file else os.path.dirname(music_path)
+
+        if not tagger.check_dependencies():
+            sys.exit(1)
+
+        if args.single_file:
+            # Single file mode
+            filepath = Path(music_path)
+            if not filepath.exists():
+                print(f"{Colors.FAIL}✗ File not found: {filepath}{Colors.ENDC}")
+                sys.exit(1)
+            if filepath.suffix.lower() not in AUDIO_EXTENSIONS:
+                print(f"{Colors.FAIL}✗ Not an audio file: {filepath}{Colors.ENDC}")
+                sys.exit(1)
+            tagger.process_files([filepath], config)
+        else:
+            if not os.path.isdir(music_path):
+                print(f"{Colors.FAIL}✗ Not a directory: {music_path}{Colors.ENDC}")
+                sys.exit(1)
+            audio_files = tagger.scan_directory()
+            if audio_files:
+                tagger.process_files(audio_files, config)
+
+    else:
+        # Interactive mode
+        try:
+            tagger = EssentiaTagger()
+            tagger.run()
+        except KeyboardInterrupt:
+            print(f"\n\n{Colors.WARNING}Operation cancelled by user{Colors.ENDC}")
+            sys.exit(0)
+        except Exception as e:
+            print(f"\n{Colors.FAIL}Unexpected error: {e}{Colors.ENDC}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

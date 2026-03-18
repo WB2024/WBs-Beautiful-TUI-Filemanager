@@ -2421,6 +2421,7 @@ class FileManager:
             ("7", f"Play Video ({video_count} videos) [{self.config.video_player}]", "video_player"),
             ("8", f"Browse Images ({image_count} images) [pixel-index]", "view_image"),
             ("9", "Fix Permissions (777 recursive)", "fix_perms"),
+            ("e", f"Essentia Tagger ({audio_count} files)", "essentia_tagger"),
             ("0", "Run Command", "run_cmd"),
             ("s", "Video Player Settings", "video_settings"),
         ]
@@ -2476,6 +2477,8 @@ class FileManager:
             self.view_selected_image()
         elif key == ord('9'):
             self.fix_permissions()
+        elif key == ord('e'):
+            self.run_essentia_tagger()
         elif key == ord('0'):
             self.run_command()
         elif key == ord('s'):
@@ -2694,6 +2697,55 @@ class FileManager:
         
         self.load_directory()
         self.message = "Extract and convert complete"
+        self.message_color = curses.COLOR_GREEN
+
+    def run_essentia_tagger(self):
+        """Run essentia-tagger in current directory"""
+        # Check if essentia-tagger is available
+        tagger_path = shutil.which('essentia-tagger')
+        if not tagger_path:
+            self.message = "essentia-tagger not found in PATH"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        # Count audio files
+        audio_count = sum(1 for e in self.entries if not e['is_dir'] and self.is_audio_file(e['path']))
+        
+        if audio_count == 0:
+            self.message = "No audio files found in current directory"
+            self.message_color = curses.COLOR_YELLOW
+            return
+        
+        # Exit curses temporarily to run the tool
+        curses.endwin()
+        
+        try:
+            # Change to current directory and run
+            original_dir = os.getcwd()
+            os.chdir(self.current_dir)
+            
+            print(f"\n{'='*70}")
+            print(f"Running essentia-tagger in: {self.current_dir}")
+            print(f"{'='*70}\n")
+            
+            subprocess.run(['essentia-tagger'], check=False)
+            
+            print(f"\n{'='*70}")
+            print("Press Enter to return to file manager...")
+            print(f"{'='*70}")
+            input()
+            
+            os.chdir(original_dir)
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            print("Press Enter to continue...")
+            input()
+        
+        # Restore curses
+        self._restore_curses()
+        self.load_directory()
+        self.message = "Essentia tagging complete"
         self.message_color = curses.COLOR_GREEN
 
     def run_iso2god(self):
