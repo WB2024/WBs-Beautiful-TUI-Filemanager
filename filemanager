@@ -2940,22 +2940,24 @@ class FileManager:
             
             # Use video-player tool if available, otherwise run player directly
             if video_player_path:
-                process = subprocess.Popen(['video-player'], 
-                    preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                env = os.environ.copy()
+                env['VIDEO_PLAYER_PREF'] = self.config.video_player
+                process = subprocess.Popen(['video-player'], env=env,
+                    start_new_session=True)
             else:
                 # Run the configured player directly
                 if player_pref == 'buddy' and buddy_path:
                     process = subprocess.Popen([buddy_path], 
-                        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                        start_new_session=True)
                 elif player_pref == 'ncplayer' and ncplayer_path:
                     process = subprocess.Popen([ncplayer_path], 
-                        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                        start_new_session=True)
                 elif buddy_path:
                     process = subprocess.Popen([buddy_path], 
-                        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                        start_new_session=True)
                 else:
                     process = subprocess.Popen([ncplayer_path], 
-                        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                        start_new_session=True)
             
             process.wait()
             
@@ -2963,16 +2965,23 @@ class FileManager:
             print("Press Enter to return to file manager...")
             print(f"{'='*70}")
             
-            signal.signal(signal.SIGINT, original_sigint)
-            input()
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
             
             os.chdir(original_dir)
             
         except Exception as e:
-            signal.signal(signal.SIGINT, original_sigint)
             print(f"Error: {e}")
             print("Press Enter to continue...")
-            input()
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+        finally:
+            # Always restore signal handler
+            signal.signal(signal.SIGINT, original_sigint)
         
         # Restore curses
         self.stdscr = curses.initscr()
@@ -3117,27 +3126,33 @@ class FileManager:
             
             # Build command based on player
             if player_name == 'ncplayer':
-                cmd = [player_path, '-k', entry['path']]  # -k for keyboard control
+                cmd = [player_path, str(entry['path'])]  # ncplayer handles its own input
             else:
-                cmd = [player_path, entry['path']]
+                cmd = [player_path, str(entry['path'])]
             
-            # Run video player - it will receive SIGINT, parent won't
-            process = subprocess.Popen(cmd, preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+            # Run video player in its own session so Ctrl+C doesn't reach filemanager
+            process = subprocess.Popen(cmd, start_new_session=True)
             process.wait()
             
             print(f"\n{'='*70}")
             print("Press Enter to return to file manager...")
             print(f"{'='*70}")
             
-            # Restore signal handler before input()
-            signal.signal(signal.SIGINT, original_sigint)
-            input()
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
             
         except Exception as e:
-            signal.signal(signal.SIGINT, original_sigint)
             print(f"Error: {e}")
             print("Press Enter to continue...")
-            input()
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+        finally:
+            # Always restore signal handler
+            signal.signal(signal.SIGINT, original_sigint)
         
         # Restore curses
         self.stdscr = curses.initscr()
@@ -5664,6 +5679,8 @@ def main(stdscr):
 
 
 if __name__ == '__main__':
+    # Ignore SIGINT at top level - curses and subprocesses handle it internally
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         curses.wrapper(main)
     except KeyboardInterrupt:

@@ -42,7 +42,12 @@ class VideoPlayer:
         self.player_preference = self.load_player_preference()
         
     def load_player_preference(self):
-        """Load video player preference from config"""
+        """Load video player preference from config or environment"""
+        # Environment variable from filemanager takes priority
+        env_pref = os.environ.get('VIDEO_PLAYER_PREF')
+        if env_pref and env_pref in ('auto', 'buddy', 'ncplayer'):
+            return env_pref
+        
         if CONFIG_FILE.exists():
             try:
                 with open(CONFIG_FILE, 'r') as f:
@@ -325,9 +330,8 @@ class VideoPlayer:
         original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
         
         try:
-            # Run player - it will receive SIGINT, parent won't
-            process = subprocess.Popen(cmd, 
-                preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+            # Run player in its own session so Ctrl+C doesn't propagate to parent
+            process = subprocess.Popen(cmd, start_new_session=True)
             process.wait()
             
             signal.signal(signal.SIGINT, original_sigint)
