@@ -3349,8 +3349,13 @@ class FileManager:
         try:
             # pixel-index launches its own TUI browser in the current directory
             # Q or Ctrl+C exits back to filemanager
+            env = os.environ.copy()
+            env['NODE_OPTIONS'] = '--max-old-space-size=4096'
+            
             process = subprocess.Popen([pi_path],
                 cwd=str(self.current_dir),
+                stderr=subprocess.PIPE,
+                env=env,
                 preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
             process.wait()
             
@@ -3367,6 +3372,25 @@ class FileManager:
             # Use os.system reset to fully clear terminal state
             os.system('stty sane 2>/dev/null')
             os.system('reset 2>/dev/null')
+            
+            # Check if pixel-index crashed
+            if process.returncode != 0:
+                stderr_output = process.stderr.read().decode('utf-8', errors='replace').strip()
+                if stderr_output:
+                    # Show last few lines of error
+                    error_lines = stderr_output.split('\n')[-3:]
+                    error_msg = '; '.join(error_lines)[:200]
+                    self._restore_curses()
+                    self.load_directory()
+                    self.message = f"pixel-index error: {error_msg}"
+                    self.message_color = curses.COLOR_RED
+                    return
+                else:
+                    self._restore_curses()
+                    self.load_directory()
+                    self.message = f"pixel-index exited with code {process.returncode} (too many files?)"
+                    self.message_color = curses.COLOR_RED
+                    return
             
         except Exception as e:
             print(f"Error: {e}")
