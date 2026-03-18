@@ -1,0 +1,492 @@
+#!/usr/bin/env python3
+"""
+File Sorter
+Sort files in a directory by type, extension, date, or size
+"""
+
+import os
+import sys
+import shutil
+from pathlib import Path
+from datetime import datetime, timedelta
+from collections import defaultdict
+
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+
+class FileSorter:
+    def __init__(self):
+        self.current_dir = os.getcwd()
+        self.files_found = []
+        self.sort_plan = defaultdict(list)  # folder_name -> [files]
+        
+        # File type categories with their extensions
+        self.type_categories = {
+            'Audio': {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', 
+                     '.wma', '.ape', '.alac', '.aiff', '.aif', '.dsf', '.dff', 
+                     '.mka', '.ac3', '.dts', '.mp2', '.mpc', '.tta', '.wv'},
+            'Video': {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm',
+                     '.m4v', '.mpg', '.mpeg', '.3gp', '.ogv', '.ts', '.m2ts',
+                     '.vob', '.divx', '.xvid', '.f4v', '.rm', '.rmvb'},
+            'Images': {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif',
+                      '.webp', '.svg', '.ico', '.heic', '.heif', '.avif',
+                      '.raw', '.cr2', '.nef', '.arw', '.dng', '.psd', '.xcf'},
+            'Documents': {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                         '.odt', '.ods', '.odp', '.rtf', '.epub', '.mobi'},
+            'Text': {'.txt', '.log', '.md', '.markdown', '.rst', '.csv', '.tsv',
+                    '.nfo', '.srt', '.sub', '.ass', '.vtt'},
+            'Code': {'.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.c', '.cpp', 
+                    '.h', '.hpp', '.cs', '.php', '.rb', '.go', '.rs', '.swift',
+                    '.kt', '.scala', '.lua', '.pl', '.r', '.m', '.sh', '.bash',
+                    '.zsh', '.fish', '.ps1', '.bat', '.cmd', '.vim', '.el'},
+            'Data': {'.json', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg',
+                    '.conf', '.sql', '.db', '.sqlite', '.sqlite3'},
+            'Web': {'.html', '.htm', '.css', '.scss', '.sass', '.less'},
+            'Archives': {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz',
+                        '.txz', '.rar', '.7z', '.cab', '.iso', '.dmg'},
+            'Executables': {'.exe', '.msi', '.app', '.apk', '.deb', '.rpm',
+                           '.dmg', '.pkg', '.appimage', '.snap', '.flatpak'},
+            'Fonts': {'.ttf', '.otf', '.woff', '.woff2', '.eot', '.fon'},
+            'Ebooks': {'.epub', '.mobi', '.azw', '.azw3', '.fb2', '.djvu'},
+            '3D_Models': {'.obj', '.stl', '.fbx', '.blend', '.3ds', '.dae', '.gltf', '.glb'},
+            'CAD': {'.dwg', '.dxf', '.step', '.stp', '.iges', '.igs'},
+            'Torrents': {'.torrent', '.magnet'},
+        }
+        
+        # Size categories in bytes
+        self.size_categories = {
+            'Tiny (< 100KB)': 100 * 1024,
+            'Small (100KB - 1MB)': 1024 * 1024,
+            'Medium (1MB - 100MB)': 100 * 1024 * 1024,
+            'Large (100MB - 1GB)': 1024 * 1024 * 1024,
+            'Huge (> 1GB)': float('inf')
+        }
+        
+        self.sort_stats = {
+            'moved': 0,
+            'errors': 0,
+            'skipped': 0
+        }
+        
+    def print_header(self, text):
+        """Print a formatted header"""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{text.center(70)}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
+    
+    def print_success(self, text):
+        """Print success message"""
+        print(f"{Colors.OKGREEN}✓ {text}{Colors.ENDC}")
+    
+    def print_error(self, text):
+        """Print error message"""
+        print(f"{Colors.FAIL}✗ {text}{Colors.ENDC}")
+    
+    def print_info(self, text):
+        """Print info message"""
+        print(f"{Colors.OKCYAN}ℹ {text}{Colors.ENDC}")
+    
+    def print_warning(self, text):
+        """Print warning message"""
+        print(f"{Colors.WARNING}⚠ {text}{Colors.ENDC}")
+    
+    def yes_no_prompt(self, question, default=True):
+        """Ask a yes/no question"""
+        default_text = "Y/n" if default else "y/N"
+        while True:
+            response = input(f"{Colors.OKBLUE}{question} ({default_text}): {Colors.ENDC}").lower().strip()
+            if response == '':
+                return default
+            if response in ['y', 'yes']:
+                return True
+            elif response in ['n', 'no']:
+                return False
+            else:
+                self.print_warning("Please answer 'y' or 'n'")
+    
+    def fix_permissions(self, path):
+        """Set permissions to 777 for a file or directory"""
+        try:
+            os.chmod(path, 0o777)
+            return True
+        except Exception as e:
+            self.print_warning(f"Could not set permissions for {path}: {e}")
+            return False
+    
+    def format_size(self, size_bytes):
+        """Format file size to human readable"""
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        elif size_bytes < 1024 * 1024 * 1024:
+            return f"{size_bytes / 1024 / 1024:.1f} MB"
+        else:
+            return f"{size_bytes / 1024 / 1024 / 1024:.2f} GB"
+    
+    def scan_directory(self):
+        """Scan current directory for files"""
+        self.print_header("Scanning Current Directory")
+        self.print_info(f"Directory: {self.current_dir}")
+        
+        self.files_found = []
+        
+        # Get all files (not directories) in current directory
+        for item in Path(self.current_dir).iterdir():
+            if item.is_file():
+                self.files_found.append(item)
+        
+        if not self.files_found:
+            self.print_warning("No files found in current directory")
+            return False
+        
+        # Sort by name
+        self.files_found.sort(key=lambda x: x.name.lower())
+        
+        self.print_success(f"Found {len(self.files_found)} file(s)")
+        
+        # Show summary by extension
+        ext_counts = defaultdict(int)
+        total_size = 0
+        for f in self.files_found:
+            ext = f.suffix.lower() if f.suffix else '(no extension)'
+            ext_counts[ext] += 1
+            try:
+                total_size += f.stat().st_size
+            except:
+                pass
+        
+        print(f"\n{Colors.BOLD}File types found:{Colors.ENDC}")
+        for ext, count in sorted(ext_counts.items(), key=lambda x: -x[1])[:10]:
+            print(f"  {Colors.OKCYAN}{ext}{Colors.ENDC}: {count} file(s)")
+        
+        if len(ext_counts) > 10:
+            print(f"  ... and {len(ext_counts) - 10} more types")
+        
+        print(f"\n{Colors.BOLD}Total size:{Colors.ENDC} {self.format_size(total_size)}")
+        
+        return True
+    
+    def get_file_category(self, filepath):
+        """Get the category for a file based on extension"""
+        ext = filepath.suffix.lower()
+        
+        for category, extensions in self.type_categories.items():
+            if ext in extensions:
+                return category
+        
+        return 'Other'
+    
+    def get_file_size_category(self, filepath):
+        """Get size category for a file"""
+        try:
+            size = filepath.stat().st_size
+        except:
+            return 'Unknown_Size'
+        
+        if size < 100 * 1024:
+            return 'Tiny_under_100KB'
+        elif size < 1024 * 1024:
+            return 'Small_100KB-1MB'
+        elif size < 100 * 1024 * 1024:
+            return 'Medium_1MB-100MB'
+        elif size < 1024 * 1024 * 1024:
+            return 'Large_100MB-1GB'
+        else:
+            return 'Huge_over_1GB'
+    
+    def get_file_date_category(self, filepath):
+        """Get date category for a file based on modification time"""
+        try:
+            mtime = datetime.fromtimestamp(filepath.stat().st_mtime)
+        except:
+            return 'Unknown_Date'
+        
+        now = datetime.now()
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        if mtime >= today:
+            return 'Today'
+        elif mtime >= today - timedelta(days=1):
+            return 'Yesterday'
+        elif mtime >= today - timedelta(days=7):
+            return 'This_Week'
+        elif mtime >= today - timedelta(days=30):
+            return 'This_Month'
+        elif mtime >= today - timedelta(days=365):
+            return 'This_Year'
+        else:
+            return f'Year_{mtime.year}'
+    
+    def get_file_first_letter(self, filepath):
+        """Get first letter category for alphabetical sorting"""
+        name = filepath.stem.upper()
+        if not name:
+            return '#_Special'
+        
+        first_char = name[0]
+        
+        if first_char.isalpha():
+            return first_char
+        elif first_char.isdigit():
+            return '0-9_Numbers'
+        else:
+            return '#_Special'
+    
+    def select_sort_method(self):
+        """Let user select sorting method"""
+        self.print_header("Select Sorting Method")
+        
+        methods = [
+            ("1", "By File Type", "type", "Groups files into categories: Audio, Video, Images, Code, etc."),
+            ("2", "By Extension", "extension", "Groups files by their extension: .mp3, .jpg, .py, etc."),
+            ("3", "By Size", "size", "Groups files by size: Tiny, Small, Medium, Large, Huge"),
+            ("4", "By Date Modified", "date", "Groups files by when they were modified: Today, This Week, etc."),
+            ("5", "By First Letter", "alpha", "Groups files alphabetically: A, B, C, ... 0-9"),
+        ]
+        
+        print(f"{Colors.BOLD}Available sorting methods:{Colors.ENDC}\n")
+        
+        for key, name, method_id, description in methods:
+            print(f"  {Colors.OKCYAN}[{key}]{Colors.ENDC} {Colors.BOLD}{name}{Colors.ENDC}")
+            print(f"      {description}")
+            print()
+        
+        print(f"  {Colors.OKCYAN}[q]{Colors.ENDC} Cancel\n")
+        
+        while True:
+            choice = input(f"{Colors.OKBLUE}Select sorting method [1]: {Colors.ENDC}").strip()
+            
+            if choice == '' or choice == '1':
+                return 'type'
+            elif choice == '2':
+                return 'extension'
+            elif choice == '3':
+                return 'size'
+            elif choice == '4':
+                return 'date'
+            elif choice == '5':
+                return 'alpha'
+            elif choice.lower() == 'q':
+                return None
+            else:
+                self.print_warning("Invalid choice. Please enter 1-5 or 'q' to cancel")
+    
+    def build_sort_plan(self, method):
+        """Build the plan for sorting files"""
+        self.sort_plan = defaultdict(list)
+        
+        for filepath in self.files_found:
+            if method == 'type':
+                folder_name = self.get_file_category(filepath)
+            elif method == 'extension':
+                ext = filepath.suffix.lower()
+                if ext:
+                    folder_name = ext[1:].upper()  # Remove dot, uppercase
+                else:
+                    folder_name = 'NO_EXTENSION'
+            elif method == 'size':
+                folder_name = self.get_file_size_category(filepath)
+            elif method == 'date':
+                folder_name = self.get_file_date_category(filepath)
+            elif method == 'alpha':
+                folder_name = self.get_file_first_letter(filepath)
+            else:
+                folder_name = 'Other'
+            
+            self.sort_plan[folder_name].append(filepath)
+    
+    def show_sort_preview(self, method):
+        """Show preview of what will happen"""
+        method_names = {
+            'type': 'File Type',
+            'extension': 'Extension',
+            'size': 'Size',
+            'date': 'Date Modified',
+            'alpha': 'First Letter'
+        }
+        
+        self.print_header(f"Sort Preview - By {method_names.get(method, method)}")
+        
+        print(f"{Colors.BOLD}The following folders will be created:{Colors.ENDC}\n")
+        
+        # Sort folders by file count (descending)
+        sorted_folders = sorted(self.sort_plan.items(), key=lambda x: -len(x[1]))
+        
+        total_files = 0
+        for folder_name, files in sorted_folders:
+            file_count = len(files)
+            total_files += file_count
+            
+            # Calculate total size for this folder
+            folder_size = sum(f.stat().st_size for f in files if f.exists())
+            
+            print(f"  {Colors.OKCYAN}📁 {folder_name}/{Colors.ENDC}")
+            print(f"     {file_count} file(s), {self.format_size(folder_size)}")
+            
+            # Show first few files as examples
+            example_files = files[:3]
+            for ef in example_files:
+                print(f"       • {ef.name}")
+            if len(files) > 3:
+                print(f"       ... and {len(files) - 3} more")
+            print()
+        
+        print(f"{Colors.BOLD}Summary:{Colors.ENDC}")
+        print(f"  Folders to create: {len(self.sort_plan)}")
+        print(f"  Files to move: {total_files}")
+        
+        return True
+    
+    def execute_sort(self, fix_permissions=True):
+        """Execute the sorting operation"""
+        self.print_header("Sorting Files")
+        
+        self.sort_stats = {'moved': 0, 'errors': 0, 'skipped': 0}
+        
+        total_items = sum(len(files) for files in self.sort_plan.values())
+        current_item = 0
+        
+        for folder_name, files in self.sort_plan.items():
+            # Create folder
+            folder_path = Path(self.current_dir) / folder_name
+            
+            try:
+                folder_path.mkdir(exist_ok=True)
+                if fix_permissions:
+                    self.fix_permissions(folder_path)
+                self.print_info(f"Created folder: {folder_name}/")
+            except Exception as e:
+                self.print_error(f"Could not create folder {folder_name}: {e}")
+                self.sort_stats['errors'] += len(files)
+                continue
+            
+            # Move files into folder
+            for filepath in files:
+                current_item += 1
+                dest_path = folder_path / filepath.name
+                
+                # Handle name collision
+                if dest_path.exists():
+                    base = filepath.stem
+                    ext = filepath.suffix
+                    counter = 1
+                    while dest_path.exists():
+                        dest_path = folder_path / f"{base}_{counter}{ext}"
+                        counter += 1
+                
+                try:
+                    # Try to move the file
+                    shutil.move(str(filepath), str(dest_path))
+                    
+                    if fix_permissions:
+                        self.fix_permissions(dest_path)
+                    
+                    self.sort_stats['moved'] += 1
+                    print(f"  [{current_item}/{total_items}] Moved: {filepath.name} → {folder_name}/")
+                    
+                except PermissionError:
+                    # Try to fix permissions and retry
+                    try:
+                        self.fix_permissions(filepath)
+                        shutil.move(str(filepath), str(dest_path))
+                        if fix_permissions:
+                            self.fix_permissions(dest_path)
+                        self.sort_stats['moved'] += 1
+                        print(f"  [{current_item}/{total_items}] Moved (after fixing perms): {filepath.name} → {folder_name}/")
+                    except Exception as e2:
+                        self.print_error(f"  [{current_item}/{total_items}] Failed: {filepath.name} - {e2}")
+                        self.sort_stats['errors'] += 1
+                        
+                except Exception as e:
+                    self.print_error(f"  [{current_item}/{total_items}] Failed: {filepath.name} - {e}")
+                    self.sort_stats['errors'] += 1
+        
+        return self.sort_stats['errors'] == 0
+    
+    def show_summary(self):
+        """Show final summary"""
+        self.print_header("Sorting Complete")
+        
+        self.print_success(f"Files moved successfully: {self.sort_stats['moved']}")
+        
+        if self.sort_stats['errors'] > 0:
+            self.print_error(f"Files failed to move: {self.sort_stats['errors']}")
+        
+        if self.sort_stats['skipped'] > 0:
+            self.print_warning(f"Files skipped: {self.sort_stats['skipped']}")
+        
+        # List created folders
+        print(f"\n{Colors.BOLD}Folders created:{Colors.ENDC}")
+        for folder_name in sorted(self.sort_plan.keys()):
+            folder_path = Path(self.current_dir) / folder_name
+            if folder_path.exists():
+                file_count = len(list(folder_path.iterdir()))
+                print(f"  {Colors.OKCYAN}📁 {folder_name}/{Colors.ENDC} ({file_count} files)")
+    
+    def run(self):
+        """Main workflow"""
+        self.print_header("File Sorter")
+        
+        # Scan directory
+        if not self.scan_directory():
+            return False
+        
+        # Select sorting method
+        method = self.select_sort_method()
+        if not method:
+            self.print_warning("Sorting cancelled")
+            return False
+        
+        # Build sort plan
+        self.build_sort_plan(method)
+        
+        # Show preview
+        self.show_sort_preview(method)
+        
+        # Get options
+        print()
+        fix_perms = self.yes_no_prompt("Set 777 permissions on created folders and moved files?", default=True)
+        
+        # Confirm
+        if not self.yes_no_prompt("\nProceed with sorting?", default=True):
+            self.print_warning("Sorting cancelled")
+            return False
+        
+        # Execute
+        success = self.execute_sort(fix_permissions=fix_perms)
+        
+        # Summary
+        self.show_summary()
+        
+        return success
+
+
+def main():
+    """Entry point"""
+    try:
+        sorter = FileSorter()
+        sorter.run()
+    except KeyboardInterrupt:
+        print(f"\n\n{Colors.WARNING}Operation cancelled by user{Colors.ENDC}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{Colors.FAIL}Unexpected error: {e}{Colors.ENDC}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
