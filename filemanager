@@ -2419,6 +2419,17 @@ class FileManager:
         # Count video files
         video_count = sum(1 for e in self.entries if not e['is_dir'] and self.is_video_file(e['path']))
         
+        # Count audio files recursively for essentia tagger (it scans recursively)
+        audio_exts = {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma', '.ape', '.alac',
+                      '.aiff', '.aif', '.dsf', '.dff', '.mka', '.wv', '.mpc', '.tta', '.m4b', '.mp4'}
+        essentia_audio_count = audio_count
+        for e in self.entries:
+            if e['is_dir'] and e['name'] != '..':
+                try:
+                    essentia_audio_count += sum(1 for f in e['path'].rglob('*') if f.suffix.lower() in audio_exts)
+                except:
+                    pass
+        
         menu_items = [
             ("1", f"Convert Audio to FLAC ({audio_count} files)", "convert_flac"),
             ("2", f"Convert Images ({image_count} files)", "convert_images"),
@@ -2429,7 +2440,7 @@ class FileManager:
             ("7", f"Play Video ({video_count} videos) [{self.config.video_player}]", "video_player"),
             ("8", f"Browse Images ({image_count} images) [pixel-index]", "view_image"),
             ("9", "Fix Permissions (777 recursive)", "fix_perms"),
-            ("e", f"Essentia Tagger ({audio_count} files)", "essentia_tagger"),
+            ("e", f"Essentia Tagger ({essentia_audio_count} files)", "essentia_tagger"),
             ("0", "Run Command", "run_cmd"),
             ("s", "Video Player Settings", "video_settings"),
         ]
@@ -2716,11 +2727,20 @@ class FileManager:
             self.message_color = curses.COLOR_RED
             return
         
-        # Count audio files
+        # Count audio files (root + subdirectories, since essentia scans recursively)
+        audio_exts = {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma', '.ape', '.alac',
+                      '.aiff', '.aif', '.dsf', '.dff', '.mka', '.wv', '.mpc', '.tta', '.m4b', '.mp4'}
         audio_count = sum(1 for e in self.entries if not e['is_dir'] and self.is_audio_file(e['path']))
+        subdir_audio_count = 0
+        for e in self.entries:
+            if e['is_dir'] and e['name'] != '..':
+                try:
+                    subdir_audio_count += sum(1 for f in e['path'].rglob('*') if f.suffix.lower() in audio_exts)
+                except:
+                    pass
         
-        if audio_count == 0:
-            self.message = "No audio files found in current directory"
+        if audio_count == 0 and subdir_audio_count == 0:
+            self.message = "No audio files found in current directory or subdirectories"
             self.message_color = curses.COLOR_YELLOW
             return
         

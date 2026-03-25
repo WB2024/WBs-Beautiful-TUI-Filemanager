@@ -203,6 +203,16 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 - **Delete unwanted folders** safely
 - Size analysis with human-readable formats
 
+#### 🎵 Essentia Music Tagger
+- **ML-powered audio analysis** using Essentia TensorFlow models
+- **Genre classification** with 400 Discogs genre classes
+- **Mood/theme tagging** using MTG Jamendo mood model
+- **Configurable thresholds** for genre and mood confidence
+- **Multiple genre formats** - Parent-child, child-parent, child-only, raw
+- **Dry run mode** - Analyze without writing tags
+- **Recursive scanning** - Finds audio in all subdirectories
+- **Standalone or integrated** - Run from command line or file manager
+
 ### 🎨 Beautiful Interface
 - **Color-coded everything** - Directories, file types, messages
 - **File icons** - Visual indicators for different file types
@@ -217,6 +227,7 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 - Terminal with **color support**
 - **ffmpeg/ffprobe** (for audio quality inspection) - Install with: `sudo apt install ffmpeg`
 - **ImageMagick** (for image conversion) - Install with: `sudo apt install imagemagick`
+- **essentia-tensorflow** + **mutagen** (for Essentia Tagger, optional) - Install with: `pip install essentia-tensorflow mutagen`
 
 **Note:** All utilities are included in this repository and will be installed along with the file manager.
 
@@ -231,8 +242,8 @@ git clone https://github.com/WB2024/WBs-Beautiful-TUI-Filemanager.git
 cd WBs-Beautiful-TUI-Filemanager
 
 # 2. Copy all utilities to system path
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort /usr/local/bin/video-player
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort /usr/local/bin/video-player /usr/local/bin/essentia-tagger
 
 # 3. Run it!
 filemanager
@@ -248,6 +259,7 @@ filemanager
 - `iso2god` - Xbox/Xbox 360 ISO to GOD converter (using iso2god-rs)
 - `file-sort` - File organization utility (sort by type, extension, size, date)
 - `video-player` - Terminal video player (using buddy)
+- `essentia-tagger` - ML-powered audio genre/mood tagger (using Essentia)
 
 ### Manual Installation
 
@@ -262,12 +274,13 @@ wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/iso2god
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/file-sort
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/video-player
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/essentia-tagger
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger
 
 # 3. Move to PATH
-sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger /usr/local/bin/
 
 # 4. Run from anywhere
 filemanager
@@ -277,7 +290,7 @@ filemanager
 
 ```bash
 # Check if all utilities are installed correctly
-which filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player
+which filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger
 
 # Should output:
 # /usr/local/bin/filemanager
@@ -289,6 +302,7 @@ which filemanager extractfile fixperms audio-to-flac extract-and-convert image-c
 # /usr/local/bin/iso2god
 # /usr/local/bin/file-sort
 # /usr/local/bin/video-player
+# /usr/local/bin/essentia-tagger
 ```
 ## 🔄 Updating
 
@@ -304,8 +318,8 @@ cd /path/to/your/WBs-Beautiful-TUI-Filemanager
 git pull origin main
 
 # 3. Copy updated files to system path (replace old versions)
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort /usr/local/bin/video-player
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort /usr/local/bin/video-player /usr/local/bin/essentia-tagger
 
 # 4. Verify the update
 filemanager
@@ -324,12 +338,13 @@ wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/iso2god -O iso2god
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/file-sort -O file-sort
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/video-player -O video-player
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/essentia-tagger -O essentia-tagger
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger
 
 # 3. Replace old versions in system path
-sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger /usr/local/bin/
 
 # 4. Verify the update
 filemanager
@@ -338,7 +353,7 @@ filemanager
 **Note:** Your bookmarks and configuration file (`~/.filemanager_config.json`) will be preserved during updates.
 ## 📦 Included Utilities
 
-This package includes nine powerful command-line tools:
+This package includes ten powerful command-line tools:
 
 ### 1. `filemanager` - Interactive TUI File Manager
 The main application providing a beautiful terminal-based file browser with built-in text editor, audio quality inspector, and tools for navigation, bookmarks, archive extraction, and folder analysis.
@@ -469,11 +484,14 @@ sudo mv iso2god-x86_64-linux /usr/local/bin/iso2god-rs
 A standalone utility for sorting and organizing files in a directory by various criteria.
 
 **Features:**
+- **Scope selection** - Sort current directory only, or recursively collect files from all subdirectories
 - **Sort by File Type** - Groups files into categories: Audio, Video, Images, Documents, Text, Code, Data, Web, Archives, Executables, Fonts, Ebooks, 3D Models, CAD, Torrents, Other
 - **Sort by Extension** - Creates folders for each file extension (MP3, JPG, PY, etc.)
 - **Sort by Size** - Groups files by size: Tiny (<100KB), Small (100KB-1MB), Medium (1MB-100MB), Large (100MB-1GB), Huge (>1GB)
 - **Sort by Date Modified** - Groups files by modification time: Today, Yesterday, This Week, This Month, This Year, or by year
 - **Sort by First Letter** - Alphabetical organization (A-Z, 0-9, Special characters)
+- **Recursive mode** - Collect files from all child folders and organize into the root directory
+- **Empty folder cleanup** - Optionally remove empty folders left behind after recursive sort
 - Preview before sorting
 - Handles permission issues automatically
 - Sets 777 permissions on created folders and moved files
@@ -560,6 +578,58 @@ brew install notcurses
 **Requirements:**
 - For buddy: Python 3.9+, terminal with 24-bit true color support
 - For ncplayer: Just the notcurses package
+
+### 10. `essentia-tagger` - ML-Powered Audio Genre/Mood Tagger
+A standalone utility for analyzing audio files with Essentia ML models and writing genre/mood tags to file metadata. Based on [Essentia-to-Metadata](https://github.com/WB2024/Essentia-to-Metadata).
+
+**Features:**
+- **ML-powered analysis** using Essentia TensorFlow models (Discogs-EffNet)
+- **Genre classification** with 400 genre classes from the Discogs taxonomy
+- **Mood/theme tagging** using the MTG Jamendo mood model
+- **Configurable settings:**
+  - Number of genre tags per file (1-10)
+  - Genre confidence threshold (1-50%)
+  - Mood confidence threshold
+  - Genre format: parent-child, child-parent, child-only, or raw
+  - Dry run mode (analyze without writing)
+  - Overwrite existing tags or preserve them
+  - Confidence score tags
+- **Broad format support:** FLAC, MP3, OGG, Opus, M4A, AAC, WMA, AIFF, WAV, WavPack, APE, Musepack, DSF
+- **Recursive scanning** - Finds audio files in all subdirectories
+- **Detailed logging** - Full analysis log saved to timestamped log file
+- **CLI and interactive modes** - Run interactively or with command-line arguments
+
+**Usage examples:**
+```bash
+# Interactive mode (run in current directory)
+essentia-tagger
+
+# Automated mode with path
+essentia-tagger /path/to/music --auto
+
+# Custom settings
+essentia-tagger /path/to/music --auto --genres 4 --genre-threshold 20
+
+# Dry run (analyze without writing tags)
+essentia-tagger /path/to/music --auto --dry-run
+
+# Single file
+essentia-tagger /path/to/song.flac --auto --single-file
+```
+
+**Dependencies:**
+- `essentia-tensorflow` - Install with: `pip install essentia-tensorflow`
+- `mutagen` - Install with: `pip install mutagen`
+- `numpy` - Install with: `pip install numpy`
+- Essentia ML models (downloaded to `~/essentia_models/`):
+```bash
+mkdir -p ~/essentia_models && cd ~/essentia_models
+wget https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bs64-1.pb
+wget https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb
+wget https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json
+wget https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.pb
+wget https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json
+```
 
 ## 📖 Usage Guide
 
