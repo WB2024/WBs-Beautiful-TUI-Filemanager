@@ -150,12 +150,15 @@ A beautiful, interactive terminal-based file manager with a built-in text editor
 ### 🛠️ Built-in Tools
 
 #### 🔓 Permission Manager
-- Set **777 permissions recursively** on current directory
-- Uses `chmod -R 777` command
-- Confirmation prompts for safety
-- One-key access with `p`
-
-**Note:** For a standalone permission tool with more options (including ownership changes), use the included `fixperms` utility from the command line.
+- **Inspect permissions** - View current permissions and ownership with plain-English explanations
+- **Inspect contents** - See permissions of every file and folder inside a directory
+- **Human-readable permission presets** - Choose access levels like "Owner Only - Completely Private" instead of memorizing numbers like 700
+- **Change owner** - Pick from a list of system users
+- **Change group** - Pick from a list of system groups
+- **Set everything at once** - Permissions, owner, and group in one workflow
+- **Quick fix** - One-click Full Access (777) for the original behavior
+- **Scope control** - Apply to just the folder, or recursively to everything inside
+- Access from file manager with `p` key, or Tools menu → `[9]`
 
 #### 📦 Archive Extractor
 - Extract **zip, tar, gz, bz2, xz, rar, 7z** archives
@@ -387,22 +390,33 @@ extractfile -l                       # List extractable files
 - RAR files: `sudo apt install unrar`
 - 7z files: `sudo apt install p7zip-full`
 
-### 3. `fixperms` - Permission Fixer
-A standalone utility for recursively setting 777 permissions and ownership on directories.
+### 3. `fixperms` - Permission Manager
+An interactive utility for inspecting and managing file/folder permissions and ownership. Designed for users who don't know Linux permission numbers — everything uses human-readable names and descriptions.
 
 **Features:**
-- Sets 777 (rwxrwxrwx) permissions recursively
-- Can optionally change ownership
-- Interactive confirmation prompts
-- Detailed progress reporting
+- **Inspect permissions** - View current permissions, ownership, and a plain-English breakdown of what they mean
+- **Inspect contents** - See permissions of every item inside a directory at a glance
+- **15 permission presets** with friendly names:
+  - "Full Access for Everyone" (777)
+  - "Owner Only - Completely Private" (700)
+  - "Read-Only for Everyone" (444)
+  - "No Access for Anyone - Completely Locked" (000)
+  - And 11 more common configurations
+- **Owner selection** - Lists all system users with labels (regular users, service accounts, root)
+- **Group selection** - Lists system groups with member info
+- **Scope control** - Apply to just a folder, or recursively to everything inside
+- **Quick fix mode** - One-click 777 for the original behavior
+- **Review before applying** - Always shows a summary of changes before executing
+- Falls back to simple `chmod -R 777` when run from the file manager if `fixperms` is not in PATH
 
 **Usage examples:**
 ```bash
-fixperms                             # Fix current directory
-fixperms /var/www                    # Fix specific directory
-fixperms . nobody:nogroup            # Fix with specific ownership
+fixperms                             # Interactive mode in current directory
+fixperms /var/www                    # Manage permissions for specific directory
 sudo fixperms                        # Run with sudo for ownership changes
 ```
+
+**No external dependencies required.**
 ### 4. `audio-to-flac` - Audio Converter
 A standalone utility for converting audio files to FLAC format with intelligent codec detection.
 

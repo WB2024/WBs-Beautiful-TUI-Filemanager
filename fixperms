@@ -1,113 +1,789 @@
 #!/usr/bin/env python3
+"""
+Permission Manager
+Inspect and set file/folder permissions and ownership with human-readable options.
+Designed for users who don't know Linux permission numbers.
+"""
 
 import os
 import sys
+import stat
+import pwd
+import grp
 import subprocess
 from pathlib import Path
+from collections import defaultdict
 
-def fix_permissions(target_dir=None, owner=None, group=None):
-    """
-    Set 777 permissions and neutral ownership for all files and folders
-    in the specified directory.
-    """
-    if target_dir is None:
-        target_dir = Path.cwd()
-    else:
-        target_dir = Path(target_dir)
-    
-    if not target_dir.exists():
-        print(f"✗ Error: Directory '{target_dir}' does not exist")
-        sys.exit(1)
-    
-    print(f"\n{'='*70}")
-    print(f"  FIXING PERMISSIONS IN: {target_dir}")
-    print(f"{'='*70}\n")
-    
-    # Determine ownership
-    if owner is None:
-        # Use current user as default
-        owner = os.environ.get('USER', 'nobody')
-    if group is None:
-        # Use current user's primary group as default
-        group = owner
-    
-    ownership = f"{owner}:{group}"
-    
-    print(f"📋 Settings:")
-    print(f"   Permissions: 777 (rwxrwxrwx)")
-    print(f"   Ownership:   {ownership}")
-    print(f"\n{'='*70}\n")
-    
-    # Confirm action
-    confirm = input(f"⚠️  This will modify ALL files and folders in '{target_dir}'.\n   Continue? (y/N): ").strip().lower()
-    
-    if confirm != 'y':
-        print("\n✗ Cancelled\n")
-        sys.exit(0)
-    
-    print("\n🔧 Processing...\n")
-    
-    try:
-        # Change permissions recursively
-        print(f"→ Setting permissions to 777...")
-        subprocess.run(['chmod', '-R', '777', str(target_dir)], check=True)
-        print("✓ Permissions updated")
-        
-        # Change ownership recursively
-        print(f"→ Setting ownership to {ownership}...")
-        subprocess.run(['chown', '-R', ownership, str(target_dir)], check=True)
-        print("✓ Ownership updated")
-        
-        print(f"\n{'='*70}")
-        print("✓ ALL DONE! Permissions and ownership updated successfully")
-        print(f"{'='*70}\n")
-        
-    except subprocess.CalledProcessError as e:
-        print(f"\n✗ Error: {e}")
-        print("\n💡 Tip: You may need to run this with sudo for ownership changes:")
-        print(f"   sudo fixperms\n")
-        sys.exit(1)
-    except KeyboardInterrupt:
-        print("\n\n✗ Interrupted\n")
-        sys.exit(1)
+
+class Colors:
+    """ANSI color codes for terminal output"""
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    UNDERLINE = '\033[4m'
+
+
+# Human-readable permission presets
+# Each entry: (octal, friendly_name, description, recommended_for)
+PERMISSION_PRESETS = [
+    (0o777, "Full Access for Everyone",
+     "Anyone can read, write, and run files",
+     "Shared folders where everyone needs full control"),
+    (0o775, "Full for Owner & Group, Read & Run for Others",
+     "Owner and group have full control, others can view and run",
+     "Shared project folders"),
+    (0o770, "Full for Owner & Group, No Access for Others",
+     "Owner and group have full control, outsiders are blocked",
+     "Team-private folders"),
+    (0o755, "Full for Owner, Read & Run for Everyone Else",
+     "Only the owner can make changes, everyone else can view",
+     "Programs, web server files, public scripts"),
+    (0o750, "Full for Owner, Read & Run for Group, Blocked for Others",
+     "Owner has full control, group can view, outsiders blocked",
+     "Semi-private programs"),
+    (0o700, "Owner Only - Completely Private",
+     "Only the owner can read, write, or run anything",
+     "Private folders, sensitive scripts"),
+    (0o666, "Read & Write for Everyone, No Execution",
+     "Anyone can read and edit, but not run as a program",
+     "Shared data files"),
+    (0o664, "Read & Write for Owner & Group, Read-Only for Others",
+     "Owner and group can edit, others can only view",
+     "Shared documents"),
+    (0o644, "Read & Write for Owner, Read-Only for Everyone Else",
+     "Only the owner can edit, everyone else can view",
+     "Configuration files, documents, web content"),
+    (0o640, "Read & Write for Owner, Read-Only for Group, Blocked for Others",
+     "Owner can edit, group can view, outsiders blocked",
+     "Semi-private config files"),
+    (0o600, "Read & Write for Owner Only - Private Files",
+     "Only the owner can read or edit, everyone else blocked",
+     "SSH keys, passwords, private data"),
+    (0o555, "Read & Run for Everyone, No Changes Allowed",
+     "Everyone can view and run, but nobody can change anything",
+     "Protected system programs"),
+    (0o444, "Read-Only for Everyone",
+     "Everyone can view, nobody can change or run",
+     "Reference files, read-only archives"),
+    (0o400, "Read-Only for Owner, Blocked for Everyone Else",
+     "Only the owner can view, nobody else has any access",
+     "Highly sensitive files (certificates, keys)"),
+    (0o000, "No Access for Anyone - Completely Locked",
+     "Nobody can do anything (root can still override)",
+     "Temporarily locking files"),
+]
+
+
+class PermissionManager:
+    def __init__(self):
+        self.current_dir = os.getcwd()
+        self.target_path = None
+
+    def print_header(self, text):
+        print(f"\n{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{text.center(70)}{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}{'='*70}{Colors.ENDC}\n")
+
+    def print_success(self, text):
+        print(f"{Colors.OKGREEN}✓ {text}{Colors.ENDC}")
+
+    def print_error(self, text):
+        print(f"{Colors.FAIL}✗ {text}{Colors.ENDC}")
+
+    def print_info(self, text):
+        print(f"{Colors.OKCYAN}ℹ {text}{Colors.ENDC}")
+
+    def print_warning(self, text):
+        print(f"{Colors.WARNING}⚠ {text}{Colors.ENDC}")
+
+    def yes_no_prompt(self, question, default=True):
+        default_text = "Y/n" if default else "y/N"
+        while True:
+            response = input(f"{Colors.OKBLUE}{question} ({default_text}): {Colors.ENDC}").lower().strip()
+            if response == '':
+                return default
+            if response in ['y', 'yes']:
+                return True
+            elif response in ['n', 'no']:
+                return False
+            else:
+                self.print_warning("Please answer 'y' or 'n'")
+
+    def format_permissions_human(self, mode):
+        """Convert a permission mode to a fully human-readable explanation"""
+        parts = []
+
+        def describe_bits(bits, who):
+            perms = []
+            if bits & 4:
+                perms.append("Read")
+            if bits & 2:
+                perms.append("Write")
+            if bits & 1:
+                perms.append("Execute/Enter")
+            if not perms:
+                return f"{who}: {Colors.FAIL}No Access{Colors.ENDC}"
+            return f"{who}: {Colors.OKGREEN}{', '.join(perms)}{Colors.ENDC}"
+
+        owner_bits = (mode >> 6) & 7
+        group_bits = (mode >> 3) & 7
+        other_bits = mode & 7
+
+        parts.append(describe_bits(owner_bits, "Owner"))
+        parts.append(describe_bits(group_bits, "Group"))
+        parts.append(describe_bits(other_bits, "Others"))
+
+        return parts
+
+    def format_octal(self, mode):
+        """Format the permission octal like 755"""
+        return f"{mode & 0o777:03o}"
+
+    def format_rwx(self, mode):
+        """Format classic rwxrwxrwx string"""
+        result = ""
+        for shift in [6, 3, 0]:
+            bits = (mode >> shift) & 7
+            result += "r" if bits & 4 else "-"
+            result += "w" if bits & 2 else "-"
+            result += "x" if bits & 1 else "-"
+        return result
+
+    def get_owner_name(self, uid):
+        """Get username from UID"""
+        try:
+            return pwd.getpwuid(uid).pw_name
+        except KeyError:
+            return str(uid)
+
+    def get_group_name(self, gid):
+        """Get group name from GID"""
+        try:
+            return grp.getgrgid(gid).gr_name
+        except KeyError:
+            return str(gid)
+
+    def inspect_path(self, path):
+        """Show detailed permission info for a file or folder"""
+        path = Path(path)
+
+        if not path.exists():
+            self.print_error(f"Path does not exist: {path}")
+            return
+
+        st = path.stat()
+        mode = st.st_mode
+
+        self.print_header(f"Inspecting: {path.name}")
+
+        # Basic info
+        is_dir = path.is_dir()
+        type_str = "📁 Folder" if is_dir else "📄 File"
+        print(f"  {Colors.BOLD}Type:{Colors.ENDC}       {type_str}")
+        print(f"  {Colors.BOLD}Full path:{Colors.ENDC}  {path}")
+
+        if not is_dir:
+            size = st.st_size
+            if size < 1024:
+                size_str = f"{size} B"
+            elif size < 1024 * 1024:
+                size_str = f"{size / 1024:.1f} KB"
+            elif size < 1024 * 1024 * 1024:
+                size_str = f"{size / 1024 / 1024:.1f} MB"
+            else:
+                size_str = f"{size / 1024 / 1024 / 1024:.2f} GB"
+            print(f"  {Colors.BOLD}Size:{Colors.ENDC}       {size_str}")
+
+        # Ownership
+        owner = self.get_owner_name(st.st_uid)
+        group = self.get_group_name(st.st_gid)
+        print(f"\n  {Colors.BOLD}Owner:{Colors.ENDC}      {Colors.OKCYAN}{owner}{Colors.ENDC} (User ID: {st.st_uid})")
+        print(f"  {Colors.BOLD}Group:{Colors.ENDC}      {Colors.OKCYAN}{group}{Colors.ENDC} (Group ID: {st.st_gid})")
+
+        # Permissions
+        octal = self.format_octal(mode)
+        rwx = self.format_rwx(mode)
+        print(f"\n  {Colors.BOLD}Permissions:{Colors.ENDC} {octal} ({rwx})")
+
+        # Find matching preset name
+        perm_val = mode & 0o777
+        preset_name = None
+        for p_octal, p_name, _, _ in PERMISSION_PRESETS:
+            if perm_val == p_octal:
+                preset_name = p_name
+                break
+        if preset_name:
+            print(f"  {Colors.BOLD}Preset:{Colors.ENDC}     {Colors.OKGREEN}{preset_name}{Colors.ENDC}")
+
+        # Human breakdown
+        print(f"\n  {Colors.BOLD}What this means:{Colors.ENDC}")
+        for line in self.format_permissions_human(mode):
+            print(f"    {line}")
+
+        # If it's a directory, show a summary of contents
+        if is_dir:
+            print(f"\n  {Colors.BOLD}Contents summary:{Colors.ENDC}")
+            try:
+                items = list(path.iterdir())
+                dirs = [i for i in items if i.is_dir()]
+                files = [i for i in items if i.is_file()]
+                print(f"    {len(dirs)} folder(s), {len(files)} file(s)")
+
+                # Show a sample of different permissions in children
+                perm_counts = defaultdict(int)
+                owner_counts = defaultdict(int)
+                for item in items[:100]:  # sample first 100
+                    try:
+                        ist = item.stat()
+                        perm_counts[self.format_octal(ist.st_mode)] += 1
+                        owner_counts[self.get_owner_name(ist.st_uid)] += 1
+                    except:
+                        pass
+                if perm_counts:
+                    print(f"\n    {Colors.BOLD}Permission variety:{Colors.ENDC}")
+                    for perm, count in sorted(perm_counts.items(), key=lambda x: -x[1])[:5]:
+                        print(f"      {perm}: {count} item(s)")
+                if len(owner_counts) > 1:
+                    print(f"\n    {Colors.BOLD}Owned by multiple users:{Colors.ENDC}")
+                    for own, count in sorted(owner_counts.items(), key=lambda x: -x[1]):
+                        print(f"      {own}: {count} item(s)")
+            except PermissionError:
+                self.print_warning("    Cannot read directory contents (permission denied)")
+
+    def inspect_children(self, path):
+        """Inspect individual files/folders inside a directory"""
+        path = Path(path)
+
+        if not path.is_dir():
+            self.print_error("Not a directory")
+            return
+
+        try:
+            items = sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        except PermissionError:
+            self.print_error("Cannot read directory (permission denied)")
+            return
+
+        if not items:
+            self.print_warning("Directory is empty")
+            return
+
+        self.print_header(f"Contents of: {path.name}")
+        print(f"  {'Type':<6} {'Perms':<12} {'Owner':<15} {'Group':<15} {'Name'}")
+        print(f"  {'─'*6} {'─'*12} {'─'*15} {'─'*15} {'─'*30}")
+
+        for item in items:
+            try:
+                st = item.stat()
+                icon = "📁" if item.is_dir() else "📄"
+                perms = f"{self.format_octal(st.st_mode)} ({self.format_rwx(st.st_mode)})"
+                owner = self.get_owner_name(st.st_uid)
+                group = self.get_group_name(st.st_gid)
+                name = item.name
+                if item.is_dir():
+                    name += "/"
+                print(f"  {icon:<6} {perms:<12} {owner:<15} {group:<15} {name}")
+            except PermissionError:
+                print(f"  {'🔒':<6} {'???':<12} {'???':<15} {'???':<15} {item.name} (access denied)")
+
+    def select_permission_preset(self):
+        """Let the user pick a permission preset using friendly names"""
+        self.print_header("Choose Permission Level")
+
+        print(f"  {Colors.BOLD}Pick the access level you want to set:{Colors.ENDC}\n")
+
+        for i, (octal, name, description, recommended) in enumerate(PERMISSION_PRESETS, 1):
+            octal_str = f"{octal:03o}"
+            rwx_str = self.format_rwx(octal << 0)  # already plain bits
+
+            # Color code by restrictiveness
+            if octal in (0o777, 0o775, 0o770, 0o666):
+                color = Colors.WARNING
+            elif octal in (0o000, 0o400):
+                color = Colors.FAIL
+            elif octal in (0o755, 0o750, 0o700, 0o664, 0o644):
+                color = Colors.OKGREEN
+            else:
+                color = Colors.OKCYAN
+
+            print(f"  {Colors.OKCYAN}[{i:>2}]{Colors.ENDC} {color}{Colors.BOLD}{name}{Colors.ENDC}")
+            print(f"       {description}")
+            print(f"       {Colors.DIM}Good for: {recommended}  |  Technical: {octal_str} ({rwx_str}){Colors.ENDC}")
+            print()
+
+        print(f"  {Colors.OKCYAN}[ q]{Colors.ENDC} Cancel\n")
+
+        while True:
+            choice = input(f"{Colors.OKBLUE}Select a permission level: {Colors.ENDC}").strip()
+            if choice.lower() == 'q':
+                return None
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(PERMISSION_PRESETS):
+                    return PERMISSION_PRESETS[idx]
+                else:
+                    self.print_warning(f"Please enter 1-{len(PERMISSION_PRESETS)} or 'q' to cancel")
+            except ValueError:
+                self.print_warning(f"Please enter a number 1-{len(PERMISSION_PRESETS)} or 'q' to cancel")
+
+    def get_system_users(self):
+        """Get list of real system users (with home directories or common service accounts)"""
+        users = []
+        try:
+            for p in pwd.getpwall():
+                # Include users with real shells or known service accounts
+                shell = p.pw_shell if p.pw_shell else ""
+                home = p.pw_dir if p.pw_dir else ""
+
+                # Real users (UID >= 1000) or well-known service accounts
+                is_real = p.pw_uid >= 1000
+                is_root = p.pw_uid == 0
+                is_service = p.pw_name in ('www-data', 'nobody', 'nogroup', 'daemon',
+                                           'sshd', 'postfix', 'mail', 'ftp', 'http',
+                                           'nginx', 'apache', 'mysql', 'postgres',
+                                           'redis', 'git', 'docker')
+                is_nologin = shell.endswith('nologin') or shell.endswith('false')
+
+                if is_real or is_root or is_service:
+                    label = p.pw_name
+                    if is_root:
+                        label += " (system administrator)"
+                    elif is_service:
+                        label += " (service account)"
+                    elif p.pw_gecos:
+                        # GECOS field often has the full name
+                        gecos = p.pw_gecos.split(',')[0]
+                        if gecos and gecos != p.pw_name:
+                            label += f" ({gecos})"
+
+                    users.append({
+                        'name': p.pw_name,
+                        'uid': p.pw_uid,
+                        'label': label,
+                        'is_real': is_real,
+                        'is_root': is_root,
+                        'is_service': is_service,
+                    })
+        except Exception:
+            # Fallback: just return current user
+            current = os.environ.get('USER', 'nobody')
+            users.append({
+                'name': current,
+                'uid': os.getuid(),
+                'label': f"{current} (current user)",
+                'is_real': True,
+                'is_root': current == 'root',
+                'is_service': False,
+            })
+        return users
+
+    def get_system_groups(self):
+        """Get list of system groups"""
+        groups = []
+        try:
+            for g in grp.getgrall():
+                is_common = g.gr_gid >= 1000 or g.gr_name in (
+                    'root', 'sudo', 'adm', 'www-data', 'nogroup', 'users',
+                    'staff', 'docker', 'plugdev', 'audio', 'video',
+                    'disk', 'ftp', 'http', 'nginx', 'apache',
+                    'mysql', 'postgres', 'redis', 'git', 'wheel')
+
+                if is_common:
+                    groups.append({
+                        'name': g.gr_name,
+                        'gid': g.gr_gid,
+                        'members': g.gr_mem,
+                    })
+        except Exception:
+            current = os.environ.get('USER', 'nobody')
+            groups.append({
+                'name': current,
+                'gid': os.getgid(),
+                'members': [],
+            })
+        return groups
+
+    def select_owner(self):
+        """Let user pick a new owner from system users"""
+        users = self.get_system_users()
+
+        self.print_header("Choose New Owner")
+        print(f"  {Colors.BOLD}Who should own these files?{Colors.ENDC}\n")
+
+        # Show real users first, then root, then service accounts
+        real_users = [u for u in users if u['is_real'] and not u['is_root']]
+        special = [u for u in users if u['is_root'] or u['is_service']]
+
+        all_ordered = real_users + special
+
+        if real_users:
+            print(f"  {Colors.BOLD}Regular Users:{Colors.ENDC}")
+            for i, u in enumerate(real_users, 1):
+                print(f"    {Colors.OKCYAN}[{i:>2}]{Colors.ENDC} {u['label']}")
+            print()
+
+        if special:
+            print(f"  {Colors.BOLD}System / Service Accounts:{Colors.ENDC}")
+            offset = len(real_users)
+            for i, u in enumerate(special, offset + 1):
+                print(f"    {Colors.OKCYAN}[{i:>2}]{Colors.ENDC} {u['label']}")
+            print()
+
+        print(f"  {Colors.OKCYAN}[ q]{Colors.ENDC} Cancel / Keep current owner\n")
+
+        while True:
+            choice = input(f"{Colors.OKBLUE}Select new owner: {Colors.ENDC}").strip()
+            if choice.lower() == 'q':
+                return None
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(all_ordered):
+                    return all_ordered[idx]['name']
+                else:
+                    self.print_warning(f"Please enter 1-{len(all_ordered)} or 'q'")
+            except ValueError:
+                self.print_warning("Please enter a number or 'q'")
+
+    def select_group(self):
+        """Let user pick a new group from system groups"""
+        groups = self.get_system_groups()
+
+        self.print_header("Choose New Group")
+        print(f"  {Colors.BOLD}Which group should these files belong to?{Colors.ENDC}")
+        print(f"  {Colors.DIM}(Groups control which team of users gets the 'Group' permissions){Colors.ENDC}\n")
+
+        regular = [g for g in groups if g['gid'] >= 1000]
+        system_groups = [g for g in groups if g['gid'] < 1000]
+
+        all_ordered = regular + system_groups
+
+        if regular:
+            print(f"  {Colors.BOLD}Regular Groups:{Colors.ENDC}")
+            for i, g in enumerate(regular, 1):
+                member_str = ""
+                if g['members']:
+                    member_str = f" {Colors.DIM}(members: {', '.join(g['members'][:5])}"
+                    if len(g['members']) > 5:
+                        member_str += f" +{len(g['members'])-5} more"
+                    member_str += f"){Colors.ENDC}"
+                print(f"    {Colors.OKCYAN}[{i:>2}]{Colors.ENDC} {g['name']}{member_str}")
+            print()
+
+        if system_groups:
+            print(f"  {Colors.BOLD}System Groups:{Colors.ENDC}")
+            offset = len(regular)
+            for i, g in enumerate(system_groups, offset + 1):
+                print(f"    {Colors.OKCYAN}[{i:>2}]{Colors.ENDC} {g['name']}")
+            print()
+
+        print(f"  {Colors.OKCYAN}[ q]{Colors.ENDC} Cancel / Keep current group\n")
+
+        while True:
+            choice = input(f"{Colors.OKBLUE}Select new group: {Colors.ENDC}").strip()
+            if choice.lower() == 'q':
+                return None
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(all_ordered):
+                    return all_ordered[idx]['name']
+                else:
+                    self.print_warning(f"Please enter 1-{len(all_ordered)} or 'q'")
+            except ValueError:
+                self.print_warning("Please enter a number or 'q'")
+
+    def select_scope(self, path):
+        """Ask whether to apply recursively or to this item only"""
+        path = Path(path)
+
+        if not path.is_dir():
+            return 'single'
+
+        self.print_header("Choose Scope")
+        print(f"  {Colors.BOLD}How should the changes be applied?{Colors.ENDC}\n")
+        print(f"  {Colors.OKCYAN}[1]{Colors.ENDC} {Colors.BOLD}This folder only{Colors.ENDC}")
+        print(f"      Change permissions on just this folder, not its contents")
+        print()
+        print(f"  {Colors.OKCYAN}[2]{Colors.ENDC} {Colors.BOLD}This folder and everything inside it{Colors.ENDC}")
+        print(f"      Recursively apply to all files and subfolders")
+        print()
+        print(f"  {Colors.OKCYAN}[q]{Colors.ENDC} Cancel\n")
+
+        while True:
+            choice = input(f"{Colors.OKBLUE}Select scope [2]: {Colors.ENDC}").strip()
+            if choice == '' or choice == '2':
+                return 'recursive'
+            elif choice == '1':
+                return 'single'
+            elif choice.lower() == 'q':
+                return None
+            else:
+                self.print_warning("Please enter 1, 2, or 'q'")
+
+    def apply_permissions(self, path, preset, owner=None, group=None, recursive=True):
+        """Apply the selected permissions and ownership"""
+        path = Path(path)
+        octal_val, preset_name, _, _ = preset
+        octal_str = f"{octal_val:03o}"
+        rwx_str = self.format_rwx(octal_val)
+
+        self.print_header("Review Changes")
+
+        print(f"  {Colors.BOLD}Target:{Colors.ENDC}       {path}")
+        print(f"  {Colors.BOLD}Scope:{Colors.ENDC}        {'Everything inside (recursive)' if recursive else 'This item only'}")
+        print(f"  {Colors.BOLD}Permissions:{Colors.ENDC}  {Colors.OKGREEN}{preset_name}{Colors.ENDC}")
+        print(f"                {Colors.DIM}{octal_str} ({rwx_str}){Colors.ENDC}")
+
+        if owner:
+            print(f"  {Colors.BOLD}New Owner:{Colors.ENDC}    {Colors.OKCYAN}{owner}{Colors.ENDC}")
+        else:
+            print(f"  {Colors.BOLD}Owner:{Colors.ENDC}        {Colors.DIM}(no change){Colors.ENDC}")
+
+        if group:
+            print(f"  {Colors.BOLD}New Group:{Colors.ENDC}    {Colors.OKCYAN}{group}{Colors.ENDC}")
+        else:
+            print(f"  {Colors.BOLD}Group:{Colors.ENDC}        {Colors.DIM}(no change){Colors.ENDC}")
+
+        print()
+
+        if not self.yes_no_prompt("Apply these changes?", default=True):
+            self.print_warning("Cancelled")
+            return False
+
+        print()
+        errors = 0
+
+        # Apply permissions
+        try:
+            if recursive:
+                self.print_info(f"Setting permissions to {octal_str} ({preset_name}) recursively...")
+                subprocess.run(['chmod', '-R', octal_str, str(path)], check=True)
+            else:
+                self.print_info(f"Setting permissions to {octal_str} ({preset_name})...")
+                os.chmod(str(path), octal_val)
+            self.print_success("Permissions updated")
+        except subprocess.CalledProcessError as e:
+            self.print_error(f"Permission change failed: {e}")
+            self.print_info("Tip: You may need to run with sudo")
+            errors += 1
+        except OSError as e:
+            self.print_error(f"Permission change failed: {e}")
+            errors += 1
+
+        # Apply ownership
+        if owner or group:
+            ownership = ""
+            if owner and group:
+                ownership = f"{owner}:{group}"
+            elif owner:
+                ownership = owner
+            elif group:
+                ownership = f":{group}"
+
+            try:
+                if recursive:
+                    self.print_info(f"Setting ownership to {ownership} recursively...")
+                    subprocess.run(['chown', '-R', ownership, str(path)], check=True)
+                else:
+                    self.print_info(f"Setting ownership to {ownership}...")
+                    subprocess.run(['chown', ownership, str(path)], check=True)
+                self.print_success("Ownership updated")
+            except subprocess.CalledProcessError as e:
+                self.print_error(f"Ownership change failed: {e}")
+                self.print_info("Tip: Changing ownership usually requires sudo")
+                errors += 1
+
+        print()
+        if errors == 0:
+            self.print_success("All changes applied successfully!")
+        else:
+            self.print_warning(f"Completed with {errors} error(s)")
+
+        return errors == 0
+
+    def show_main_menu(self):
+        """Show main interactive menu"""
+        target = Path(self.current_dir)
+
+        self.print_header("Permission Manager")
+        self.print_info(f"Working in: {target}")
+        print()
+
+        print(f"  {Colors.BOLD}What would you like to do?{Colors.ENDC}\n")
+        print(f"  {Colors.OKCYAN}[1]{Colors.ENDC} {Colors.BOLD}Inspect permissions{Colors.ENDC}")
+        print(f"      See current permissions and ownership of this folder")
+        print()
+        print(f"  {Colors.OKCYAN}[2]{Colors.ENDC} {Colors.BOLD}Inspect contents{Colors.ENDC}")
+        print(f"      See permissions of each file and folder inside")
+        print()
+        print(f"  {Colors.OKCYAN}[3]{Colors.ENDC} {Colors.BOLD}Set permissions{Colors.ENDC}")
+        print(f"      Change the access level using easy-to-understand options")
+        print()
+        print(f"  {Colors.OKCYAN}[4]{Colors.ENDC} {Colors.BOLD}Change owner{Colors.ENDC}")
+        print(f"      Transfer ownership to a different user")
+        print()
+        print(f"  {Colors.OKCYAN}[5]{Colors.ENDC} {Colors.BOLD}Change group{Colors.ENDC}")
+        print(f"      Change which group of users has group-level access")
+        print()
+        print(f"  {Colors.OKCYAN}[6]{Colors.ENDC} {Colors.BOLD}Set everything at once{Colors.ENDC}")
+        print(f"      Pick permissions, owner, and group all in one go")
+        print()
+        print(f"  {Colors.OKCYAN}[7]{Colors.ENDC} {Colors.BOLD}Quick fix - Full Access for Everyone (777){Colors.ENDC}")
+        print(f"      One-click: set 777 permissions recursively (original behavior)")
+        print()
+        print(f"  {Colors.OKCYAN}[q]{Colors.ENDC} Quit\n")
+
+        while True:
+            choice = input(f"{Colors.OKBLUE}Select an option: {Colors.ENDC}").strip()
+            if choice in ['1', '2', '3', '4', '5', '6', '7']:
+                return choice
+            elif choice.lower() == 'q':
+                return None
+            else:
+                self.print_warning("Please enter 1-7 or 'q'")
+
+    def run(self):
+        """Main interactive workflow"""
+        while True:
+            choice = self.show_main_menu()
+
+            if choice is None:
+                self.print_info("Goodbye!")
+                break
+
+            target = Path(self.current_dir)
+
+            if choice == '1':
+                # Inspect current directory
+                self.inspect_path(target)
+                input(f"\n{Colors.OKBLUE}Press Enter to continue...{Colors.ENDC}")
+
+            elif choice == '2':
+                # Inspect contents
+                self.inspect_children(target)
+                input(f"\n{Colors.OKBLUE}Press Enter to continue...{Colors.ENDC}")
+
+            elif choice == '3':
+                # Set permissions only
+                preset = self.select_permission_preset()
+                if preset:
+                    scope = self.select_scope(target)
+                    if scope:
+                        recursive = (scope == 'recursive')
+                        self.apply_permissions(target, preset, recursive=recursive)
+                        input(f"\n{Colors.OKBLUE}Press Enter to continue...{Colors.ENDC}")
+
+            elif choice == '4':
+                # Change owner only
+                owner = self.select_owner()
+                if owner:
+                    scope = self.select_scope(target)
+                    if scope:
+                        recursive = (scope == 'recursive')
+                        # Keep current permissions
+                        st = target.stat()
+                        current_perm = st.st_mode & 0o777
+                        # Find matching preset or create a placeholder
+                        matched = None
+                        for p in PERMISSION_PRESETS:
+                            if p[0] == current_perm:
+                                matched = p
+                                break
+                        if not matched:
+                            rwx = self.format_rwx(current_perm)
+                            matched = (current_perm, f"Current ({self.format_octal(st.st_mode)})", rwx, "")
+                        self.apply_permissions(target, matched, owner=owner, recursive=recursive)
+                        input(f"\n{Colors.OKBLUE}Press Enter to continue...{Colors.ENDC}")
+
+            elif choice == '5':
+                # Change group only
+                group = self.select_group()
+                if group:
+                    scope = self.select_scope(target)
+                    if scope:
+                        recursive = (scope == 'recursive')
+                        st = target.stat()
+                        current_perm = st.st_mode & 0o777
+                        matched = None
+                        for p in PERMISSION_PRESETS:
+                            if p[0] == current_perm:
+                                matched = p
+                                break
+                        if not matched:
+                            rwx = self.format_rwx(current_perm)
+                            matched = (current_perm, f"Current ({self.format_octal(st.st_mode)})", rwx, "")
+                        self.apply_permissions(target, matched, group=group, recursive=recursive)
+                        input(f"\n{Colors.OKBLUE}Press Enter to continue...{Colors.ENDC}")
+
+            elif choice == '6':
+                # Set everything
+                preset = self.select_permission_preset()
+                if not preset:
+                    continue
+                owner = self.select_owner()
+                group = self.select_group()
+                scope = self.select_scope(target)
+                if scope:
+                    recursive = (scope == 'recursive')
+                    self.apply_permissions(target, preset, owner=owner, group=group, recursive=recursive)
+                    input(f"\n{Colors.OKBLUE}Press Enter to continue...{Colors.ENDC}")
+
+            elif choice == '7':
+                # Quick fix 777
+                preset = (0o777, "Full Access for Everyone", "Anyone can read, write, and run files", "")
+                if self.yes_no_prompt(f"\nSet Full Access (777) on everything in {target}?", default=True):
+                    self.apply_permissions(target, preset, recursive=True)
+                    input(f"\n{Colors.OKBLUE}Press Enter to continue...{Colors.ENDC}")
+
 
 def main():
-    """Main entry point."""
-    # Parse simple arguments
-    target_dir = None
-    owner = None
-    group = None
-    
+    """Entry point"""
+    # Support legacy CLI usage: fixperms [directory] [owner:group]
     if len(sys.argv) > 1:
         if sys.argv[1] in ['-h', '--help']:
-            print("""
-Usage: fixperms [directory] [owner:group]
+            print(f"""
+{Colors.BOLD}Usage:{Colors.ENDC} fixperms [directory]
 
-Sets 777 permissions and ownership for all files and folders.
+{Colors.BOLD}Interactive Permission Manager{Colors.ENDC}
+Inspect and set file/folder permissions and ownership with human-readable options.
 
-Arguments:
+{Colors.BOLD}Arguments:{Colors.ENDC}
   directory     Target directory (default: current directory)
-  owner:group   Ownership to set (default: current user)
 
-Examples:
-  fixperms                    # Fix current directory
-  fixperms /var/www           # Fix specific directory
-  fixperms . nobody:nogroup   # Fix with specific ownership
-  sudo fixperms               # Run with sudo if needed
+{Colors.BOLD}Examples:{Colors.ENDC}
+  fixperms                    # Manage permissions in current directory
+  fixperms /var/www           # Manage permissions for /var/www
+  sudo fixperms               # Run with sudo for ownership changes
 
-Note: Changing ownership typically requires sudo/root privileges.
+{Colors.BOLD}Note:{Colors.ENDC} Changing ownership typically requires sudo/root privileges.
 """)
             sys.exit(0)
-        
-        target_dir = sys.argv[1]
-        
-        if len(sys.argv) > 2:
-            ownership_parts = sys.argv[2].split(':')
-            owner = ownership_parts[0]
-            if len(ownership_parts) > 1:
-                group = ownership_parts[1]
-    
-    fix_permissions(target_dir, owner, group)
+
+        # If a directory argument is given, change to it
+        target = sys.argv[1]
+        if os.path.isdir(target):
+            os.chdir(target)
+        else:
+            print(f"{Colors.FAIL}✗ Error: '{target}' is not a directory{Colors.ENDC}")
+            sys.exit(1)
+
+    try:
+        manager = PermissionManager()
+        manager.run()
+    except KeyboardInterrupt:
+        print(f"\n\n{Colors.WARNING}Operation cancelled by user{Colors.ENDC}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{Colors.FAIL}Unexpected error: {e}{Colors.ENDC}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

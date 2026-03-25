@@ -1076,29 +1076,63 @@ class FileManager:
             break
     
     def fix_permissions(self):
-        """Fix permissions on current directory"""
-        lines = [
-            f"Directory: {self.current_dir}",
-            "",
-            "This will set permissions to 777 recursively.",
-            "Continue? (y/n)"
-        ]
-        
-        self.show_message_box("FIX PERMISSIONS", lines, wait_for_key=False)
-        
-        key = self.stdscr.getch()
-        
-        if key in [ord('y'), ord('Y')]:
-            try:
-                subprocess.run(['chmod', '-R', '777', str(self.current_dir)], check=True)
-                self.message = "Permissions updated successfully"
-                self.message_color = curses.COLOR_GREEN
-            except Exception as e:
-                self.message = f"Error: {e}"
-                self.message_color = curses.COLOR_RED
-        else:
-            self.message = "Cancelled"
-            self.message_color = curses.COLOR_YELLOW
+        """Run fixperms tool in current directory"""
+        # Check if fixperms is available
+        fixperms_path = shutil.which('fixperms')
+        if not fixperms_path:
+            # Fallback to simple chmod if fixperms not in PATH
+            lines = [
+                f"Directory: {self.current_dir}",
+                "",
+                "fixperms not found in PATH.",
+                "Falling back to simple chmod -R 777.",
+                "Continue? (y/n)"
+            ]
+            self.show_message_box("FIX PERMISSIONS", lines, wait_for_key=False)
+            key = self.stdscr.getch()
+            if key in [ord('y'), ord('Y')]:
+                try:
+                    subprocess.run(['chmod', '-R', '777', str(self.current_dir)], check=True)
+                    self.message = "Permissions updated (777 recursive)"
+                    self.message_color = curses.COLOR_GREEN
+                except Exception as e:
+                    self.message = f"Error: {e}"
+                    self.message_color = curses.COLOR_RED
+            else:
+                self.message = "Cancelled"
+                self.message_color = curses.COLOR_YELLOW
+            return
+
+        # Exit curses temporarily to run the interactive tool
+        curses.endwin()
+
+        try:
+            original_dir = os.getcwd()
+            os.chdir(self.current_dir)
+
+            print(f"\n{'='*70}")
+            print(f"Running Permission Manager in: {self.current_dir}")
+            print(f"{'='*70}\n")
+
+            subprocess.run(['fixperms'], check=False)
+
+            print(f"\n{'='*70}")
+            print("Press Enter to return to file manager...")
+            print(f"{'='*70}")
+            input()
+
+            os.chdir(original_dir)
+
+        except Exception as e:
+            print(f"Error: {e}")
+            print("Press Enter to continue...")
+            input()
+
+        # Restore curses
+        self._restore_curses()
+        self.load_directory()
+        self.message = "Permission manager complete"
+        self.message_color = curses.COLOR_GREEN
     
     def extract_archives(self):
         """Extract archives in current directory"""
@@ -2439,7 +2473,7 @@ class FileManager:
             ("6", f"Sort Files ({sort_total} files)", "file_sort"),
             ("7", f"Play Video ({video_count} videos) [{self.config.video_player}]", "video_player"),
             ("8", f"Browse Images ({image_count} images) [pixel-index]", "view_image"),
-            ("9", "Fix Permissions (777 recursive)", "fix_perms"),
+            ("9", "Permission Manager", "fix_perms"),
             ("e", f"Essentia Tagger ({essentia_audio_count} files)", "essentia_tagger"),
             ("0", "Run Command", "run_cmd"),
             ("s", "Video Player Settings", "video_settings"),
