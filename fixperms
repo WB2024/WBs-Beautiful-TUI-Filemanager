@@ -557,6 +557,7 @@ class PermissionManager:
 
         print()
         errors = 0
+        is_root = os.geteuid() == 0
 
         # Apply permissions
         try:
@@ -567,13 +568,21 @@ class PermissionManager:
                 self.print_info(f"Setting permissions to {octal_str} ({preset_name})...")
                 os.chmod(str(path), octal_val)
             self.print_success("Permissions updated")
-        except subprocess.CalledProcessError as e:
-            self.print_error(f"Permission change failed: {e}")
-            self.print_info("Tip: You may need to run with sudo")
-            errors += 1
-        except OSError as e:
-            self.print_error(f"Permission change failed: {e}")
-            errors += 1
+        except (subprocess.CalledProcessError, OSError):
+            if not is_root:
+                self.print_warning("Permission denied, retrying with sudo...")
+                try:
+                    if recursive:
+                        subprocess.run(['sudo', 'chmod', '-R', octal_str, str(path)], check=True)
+                    else:
+                        subprocess.run(['sudo', 'chmod', octal_str, str(path)], check=True)
+                    self.print_success("Permissions updated (via sudo)")
+                except subprocess.CalledProcessError as e2:
+                    self.print_error(f"Permission change failed even with sudo: {e2}")
+                    errors += 1
+            else:
+                self.print_error("Permission change failed")
+                errors += 1
 
         # Apply ownership
         if owner or group:
@@ -585,18 +594,27 @@ class PermissionManager:
             elif group:
                 ownership = f":{group}"
 
+            cmd = ['chown']
+            if recursive:
+                cmd.append('-R')
+            cmd.extend([ownership, str(path)])
+
             try:
-                if recursive:
-                    self.print_info(f"Setting ownership to {ownership} recursively...")
-                    subprocess.run(['chown', '-R', ownership, str(path)], check=True)
-                else:
-                    self.print_info(f"Setting ownership to {ownership}...")
-                    subprocess.run(['chown', ownership, str(path)], check=True)
+                self.print_info(f"Setting ownership to {ownership}{' recursively' if recursive else ''}...")
+                subprocess.run(cmd, check=True)
                 self.print_success("Ownership updated")
-            except subprocess.CalledProcessError as e:
-                self.print_error(f"Ownership change failed: {e}")
-                self.print_info("Tip: Changing ownership usually requires sudo")
-                errors += 1
+            except subprocess.CalledProcessError:
+                if not is_root:
+                    self.print_warning("Permission denied, retrying with sudo...")
+                    try:
+                        subprocess.run(['sudo'] + cmd, check=True)
+                        self.print_success("Ownership updated (via sudo)")
+                    except subprocess.CalledProcessError as e2:
+                        self.print_error(f"Ownership change failed even with sudo: {e2}")
+                        errors += 1
+                else:
+                    self.print_error("Ownership change failed")
+                    errors += 1
 
         print()
         if errors == 0:
