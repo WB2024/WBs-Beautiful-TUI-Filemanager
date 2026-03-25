@@ -30,6 +30,7 @@ class FileSorter:
         self.current_dir = os.getcwd()
         self.files_found = []
         self.sort_plan = defaultdict(list)  # folder_name -> [files]
+        self.recursive = False  # Whether to scan subdirectories
         
         # File type categories with their extensions
         self.type_categories = {
@@ -135,10 +136,59 @@ class FileSorter:
         else:
             return f"{size_bytes / 1024 / 1024 / 1024:.2f} GB"
     
+    def select_scope(self):
+        """Let user select scanning scope"""
+        self.print_header("Select Scanning Scope")
+        
+        # Count subdirectories to show info
+        subdirs = [d for d in Path(self.current_dir).iterdir() if d.is_dir()]
+        root_files = [f for f in Path(self.current_dir).iterdir() if f.is_file()]
+        
+        print(f"{Colors.BOLD}Current directory:{Colors.ENDC} {self.current_dir}")
+        print(f"  Files in root: {len(root_files)}")
+        print(f"  Subdirectories: {len(subdirs)}")
+        print()
+        
+        print(f"{Colors.BOLD}Scanning scope options:{Colors.ENDC}\n")
+        print(f"  {Colors.OKCYAN}[1]{Colors.ENDC} {Colors.BOLD}Current directory only{Colors.ENDC}")
+        print(f"      Sort only files in the root of this directory")
+        print()
+        print(f"  {Colors.OKCYAN}[2]{Colors.ENDC} {Colors.BOLD}All subdirectories (recursive){Colors.ENDC}")
+        print(f"      Collect files from ALL child folders and sort them into")
+        print(f"      organized folders in the current root directory")
+        print()
+        print(f"  {Colors.OKCYAN}[q]{Colors.ENDC} Cancel\n")
+        
+        while True:
+            choice = input(f"{Colors.OKBLUE}Select scope [1]: {Colors.ENDC}").strip()
+            
+            if choice == '' or choice == '1':
+                self.recursive = False
+                return True
+            elif choice == '2':
+                if not subdirs:
+                    self.print_warning("No subdirectories found. Using current directory only.")
+                    self.recursive = False
+                else:
+                    self.recursive = True
+                return True
+            elif choice.lower() == 'q':
+                return False
+            else:
+                self.print_warning("Invalid choice. Please enter 1, 2, or 'q' to cancel")
+    
     def scan_directory(self):
-        """Scan current directory for files"""
+        """Scan directory for files based on selected scope"""
+        if self.recursive:
+            return self._scan_recursive()
+        else:
+            return self._scan_root_only()
+    
+    def _scan_root_only(self):
+        """Scan only the current directory root for files"""
         self.print_header("Scanning Current Directory")
         self.print_info(f"Directory: {self.current_dir}")
+        self.print_info(f"Scope: Current directory only")
         
         self.files_found = []
         
@@ -155,8 +205,58 @@ class FileSorter:
         self.files_found.sort(key=lambda x: x.name.lower())
         
         self.print_success(f"Found {len(self.files_found)} file(s)")
+        self._show_scan_summary()
+        return True
+    
+    def _scan_recursive(self):
+        """Scan all subdirectories recursively for files"""
+        self.print_header("Scanning All Subdirectories (Recursive)")
+        self.print_info(f"Directory: {self.current_dir}")
+        self.print_info(f"Scope: All subdirectories")
         
-        # Show summary by extension
+        self.files_found = []
+        dir_counts = defaultdict(int)
+        
+        root_path = Path(self.current_dir)
+        
+        # Walk all subdirectories
+        for dirpath, dirnames, filenames in os.walk(self.current_dir):
+            current_path = Path(dirpath)
+            
+            # Skip the root directory itself - only collect from subdirectories
+            if current_path == root_path:
+                continue
+            
+            for filename in filenames:
+                filepath = current_path / filename
+                if filepath.is_file():
+                    self.files_found.append(filepath)
+                    # Track which top-level subdirectory this came from
+                    rel = filepath.relative_to(root_path)
+                    top_dir = rel.parts[0]
+                    dir_counts[top_dir] += 1
+        
+        if not self.files_found:
+            self.print_warning("No files found in subdirectories")
+            return False
+        
+        # Sort by name
+        self.files_found.sort(key=lambda x: x.name.lower())
+        
+        self.print_success(f"Found {len(self.files_found)} file(s) across {len(dir_counts)} subdirectorie(s)")
+        
+        # Show per-directory breakdown
+        print(f"\n{Colors.BOLD}Files found per subdirectory:{Colors.ENDC}")
+        for dirname, count in sorted(dir_counts.items(), key=lambda x: -x[1])[:10]:
+            print(f"  {Colors.OKCYAN}{dirname}/{Colors.ENDC}: {count} file(s)")
+        if len(dir_counts) > 10:
+            print(f"  ... and {len(dir_counts) - 10} more directories")
+        
+        self._show_scan_summary()
+        return True
+    
+    def _show_scan_summary(self):
+        """Show summary of scanned files by extension and total size"""
         ext_counts = defaultdict(int)
         total_size = 0
         for f in self.files_found:
@@ -175,8 +275,6 @@ class FileSorter:
             print(f"  ... and {len(ext_counts) - 10} more types")
         
         print(f"\n{Colors.BOLD}Total size:{Colors.ENDC} {self.format_size(total_size)}")
-        
-        return True
     
     def get_file_category(self, filepath):
         """Get the category for a file based on extension"""
@@ -338,7 +436,14 @@ class FileSorter:
             # Show first few files as examples
             example_files = files[:3]
             for ef in example_files:
-                print(f"       • {ef.name}")
+                if self.recursive:
+                    try:
+                        rel = ef.relative_to(self.current_dir)
+                        print(f"       • {rel}")
+                    except ValueError:
+                        print(f"       • {ef.name}")
+                else:
+                    print(f"       • {ef.name}")
             if len(files) > 3:
                 print(f"       ... and {len(files) - 3} more")
             print()
@@ -415,6 +520,44 @@ class FileSorter:
         
         return self.sort_stats['errors'] == 0
     
+    def cleanup_empty_folders(self):
+        """Remove empty folders left behind after recursive sort"""
+        self.print_header("Cleaning Up Empty Folders")
+        
+        removed = 0
+        failed = 0
+        root_path = Path(self.current_dir)
+        
+        # Walk bottom-up so we remove deepest empty dirs first
+        for dirpath, dirnames, filenames in os.walk(self.current_dir, topdown=False):
+            current_path = Path(dirpath)
+            
+            # Don't try to remove the root directory itself
+            if current_path == root_path:
+                continue
+            
+            # Don't remove folders that were just created by the sort
+            if current_path.name in self.sort_plan:
+                continue
+            
+            # Check if directory is empty
+            try:
+                if not any(current_path.iterdir()):
+                    current_path.rmdir()
+                    removed += 1
+                    print(f"  Removed empty folder: {current_path.relative_to(root_path)}")
+            except Exception as e:
+                self.print_warning(f"  Could not remove {current_path.relative_to(root_path)}: {e}")
+                failed += 1
+        
+        if removed > 0:
+            self.print_success(f"Removed {removed} empty folder(s)")
+        else:
+            self.print_info("No empty folders found")
+        
+        if failed > 0:
+            self.print_warning(f"Failed to remove {failed} folder(s)")
+    
     def show_summary(self):
         """Show final summary"""
         self.print_header("Sorting Complete")
@@ -439,6 +582,11 @@ class FileSorter:
         """Main workflow"""
         self.print_header("File Sorter")
         
+        # Select scope (current dir only or recursive)
+        if not self.select_scope():
+            self.print_warning("Sorting cancelled")
+            return False
+        
         # Scan directory
         if not self.scan_directory():
             return False
@@ -459,6 +607,10 @@ class FileSorter:
         print()
         fix_perms = self.yes_no_prompt("Set 777 permissions on created folders and moved files?", default=True)
         
+        clean_empty = False
+        if self.recursive:
+            clean_empty = self.yes_no_prompt("Remove empty folders after sorting?", default=True)
+        
         # Confirm
         if not self.yes_no_prompt("\nProceed with sorting?", default=True):
             self.print_warning("Sorting cancelled")
@@ -466,6 +618,10 @@ class FileSorter:
         
         # Execute
         success = self.execute_sort(fix_permissions=fix_perms)
+        
+        # Clean up empty folders if requested
+        if self.recursive and clean_empty:
+            self.cleanup_empty_folders()
         
         # Summary
         self.show_summary()
