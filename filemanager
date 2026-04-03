@@ -2475,6 +2475,7 @@ class FileManager:
             ("8", f"Browse Images ({image_count} images) [pixel-index]", "view_image"),
             ("9", "Permission Manager", "fix_perms"),
             ("e", f"Essentia Tagger ({essentia_audio_count} files)", "essentia_tagger"),
+            ("t", "File Transfer (dual-pane)", "file_transfer"),
             ("0", "Run Command", "run_cmd"),
             ("s", "Video Player Settings", "video_settings"),
         ]
@@ -2532,6 +2533,8 @@ class FileManager:
             self.fix_permissions()
         elif key == ord('e'):
             self.run_essentia_tagger()
+        elif key == ord('t'):
+            self.run_file_transfer()
         elif key == ord('0'):
             self.run_command()
         elif key == ord('s'):
@@ -2945,6 +2948,67 @@ class FileManager:
         
         self.load_directory()
         self.message = "Command completed"
+        self.message_color = curses.COLOR_GREEN
+
+    def run_file_transfer(self):
+        """Run file-transfer dual-pane tool starting from current directory"""
+        # Check if file-transfer is available
+        tool_path = shutil.which('file-transfer')
+        if not tool_path:
+            self.message = "file-transfer not found in PATH"
+            self.message_color = curses.COLOR_RED
+            return
+        
+        # Exit curses temporarily to run the tool
+        curses.endwin()
+        
+        try:
+            original_dir = os.getcwd()
+            
+            print(f"\n{'='*70}")
+            print(f"Running file-transfer from: {self.current_dir}")
+            print(f"{'='*70}\n")
+            
+            subprocess.run(['file-transfer', str(self.current_dir)], check=False)
+            
+            print(f"\n{'='*70}")
+            print("Press Enter to return to file manager...")
+            print(f"{'='*70}")
+            input()
+            
+            os.chdir(original_dir)
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            print("Press Enter to continue...")
+            input()
+        
+        # Restore curses
+        self.stdscr = curses.initscr()
+        curses.start_color()
+        curses.use_default_colors()
+        curses.noecho()
+        curses.cbreak()
+        curses.curs_set(0)
+        self.stdscr.keypad(True)
+        
+        # Reinitialize color pairs
+        curses.init_pair(1, curses.COLOR_CYAN, -1)
+        curses.init_pair(2, curses.COLOR_GREEN, -1)
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(5, curses.COLOR_RED, -1)
+        curses.init_pair(6, curses.COLOR_WHITE, -1)
+        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        curses.init_pair(8, curses.COLOR_GREEN, -1)
+        curses.init_pair(9, curses.COLOR_RED, -1)
+        curses.init_pair(10, curses.COLOR_YELLOW, -1)
+        curses.init_pair(11, curses.COLOR_BLUE, -1)
+        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        
+        self.load_directory()
+        self.message = "File transfer complete"
         self.message_color = curses.COLOR_GREEN
 
     def run_file_sort(self):

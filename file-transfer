@@ -1,0 +1,1300 @@
+#!/usr/bin/env python3
+"""
+File Transfer Tool
+Dual-pane file browser for copying, moving, and managing files between directories.
+"""
+
+import os
+import sys
+import curses
+import shutil
+import stat
+import pwd
+import grp
+import time
+from pathlib import Path
+from datetime import datetime
+
+
+class FileTransfer:
+    def __init__(self, left_path=None, right_path=None):
+        self.left_path = Path(left_path or os.getcwd()).resolve()
+        self.right_path = Path(right_path or os.path.expanduser('~')).resolve()
+
+        # Validate starting paths
+        if not self.left_path.is_dir():
+            self.left_path = Path(os.getcwd()).resolve()
+        if not self.right_path.is_dir():
+            self.right_path = Path(os.path.expanduser('~')).resolve()
+
+        self.left_entries = []
+        self.right_entries = []
+        self.left_cursor = 0
+        self.right_cursor = 0
+        self.left_scroll = 0
+        self.right_scroll = 0
+        self.left_selected = set()
+        self.right_selected = set()
+
+        self.active_pane = 'left'  # 'left' or 'right'
+
+        self.show_hidden = False
+        self.message = ""
+        self.message_color = 0
+        self.message_time = 0
+
+        self.sort_by = 'name'  # 'name', 'size', 'date', 'type'
+        self.sort_reverse = False
+        self.dirs_first = True
+
+        # Operation stats
+        self.op_stats = {'copied': 0, 'moved': 0, 'deleted': 0, 'errors': 0}
+
+    def init_colors(self):
+        """Initialize curses color pairs"""
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_CYAN, -1)       # directories
+        curses.init_pair(2, curses.COLOR_GREEN, -1)       # executables
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)      # archives
+        curses.init_pair(4, curses.COLOR_MAGENTA, -1)     # images/media
+        curses.init_pair(5, curses.COLOR_RED, -1)         # errors/warnings
+        curses.init_pair(6, curses.COLOR_WHITE, -1)       # normal files
+        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)    # header/active pane
+        curses.init_pair(8, curses.COLOR_BLACK, curses.COLOR_GREEN)   # selected items
+        curses.init_pair(9, curses.COLOR_BLACK, curses.COLOR_YELLOW)  # cursor
+        curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_WHITE)  # inactive header
+        curses.init_pair(11, curses.COLOR_CYAN, curses.COLOR_BLACK)   # status bar
+        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_MAGENTA) # selected + cursor
+        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)  # key hints
+
+    def load_directory(self, path):
+        """Load directory entries, returns list of dicts"""
+        entries = []
+        try:
+            items = list(path.iterdir())
+        except PermissionError:
+            self.set_message("Permission denied", curses.COLOR_RED)
+            return entries
+        except OSError as e:
+            self.set_message(f"Error: {e}", curses.COLOR_RED)
+            return entries
+
+        for item in items:
+            if not self.show_hidden and item.name.startswith('.'):
+                continue
+
+            try:
+                st = item.stat()
+                is_dir = item.is_dir()
+                size = st.st_size if not is_dir else 0
+                mtime = st.st_mtime
+                mode = st.st_mode
+
+                # Count items in subdirectories
+                if is_dir:
+                    try:
+                        size = sum(1 for _ in item.iterdir())
+                    except (PermissionError, OSError):
+                        size = -1
+
+                entries.append({
+                    'name': item.name,
+                    'path': item,
+                    'is_dir': is_dir,
+                    'size': size,
+                    'mtime': mtime,
+                    'mode': mode,
+                    'is_link': item.is_symlink(),
+                })
+            except (PermissionError, OSError):
+                entries.append({
+                    'name': item.name,
+                    'path': item,
+                    'is_dir': False,
+                    'size': 0,
+                    'mtime': 0,
+                    'mode': 0,
+                    'is_link': False,
+                })
+
+        # Sort entries
+        entries = self.sort_entries(entries)
+
+        return entries
+
+    def sort_entries(self, entries):
+        """Sort entries based on current sort settings"""
+        dirs = [e for e in entries if e['is_dir']]
+        files = [e for e in entries if not e['is_dir']]
+
+        if self.sort_by == 'name':
+            key_fn = lambda e: e['name'].lower()
+        elif self.sort_by == 'size':
+            key_fn = lambda e: e['size']
+        elif self.sort_by == 'date':
+            key_fn = lambda e: e['mtime']
+        elif self.sort_by == 'type':
+            key_fn = lambda e: (e['path'].suffix.lower(), e['name'].lower())
+        else:
+            key_fn = lambda e: e['name'].lower()
+
+        dirs.sort(key=lambda e: e['name'].lower(), reverse=self.sort_reverse)
+        files.sort(key=key_fn, reverse=self.sort_reverse)
+
+        if self.dirs_first:
+            return dirs + files
+        else:
+            all_entries = dirs + files
+            all_entries.sort(key=key_fn, reverse=self.sort_reverse)
+            return all_entries
+
+    def refresh_panes(self):
+        """Reload both directory listings"""
+        self.left_entries = self.load_directory(self.left_path)
+        self.right_entries = self.load_directory(self.right_path)
+        self.clamp_cursors()
+
+    def refresh_left(self):
+        """Reload left pane"""
+        self.left_entries = self.load_directory(self.left_path)
+        self.clamp_cursor_left()
+
+    def refresh_right(self):
+        """Reload right pane"""
+        self.right_entries = self.load_directory(self.right_path)
+        self.clamp_cursor_right()
+
+    def clamp_cursors(self):
+        self.clamp_cursor_left()
+        self.clamp_cursor_right()
+
+    def clamp_cursor_left(self):
+        if len(self.left_entries) == 0:
+            self.left_cursor = 0
+        elif self.left_cursor >= len(self.left_entries):
+            self.left_cursor = len(self.left_entries) - 1
+        self.left_selected = {i for i in self.left_selected if i < len(self.left_entries)}
+
+    def clamp_cursor_right(self):
+        if len(self.right_entries) == 0:
+            self.right_cursor = 0
+        elif self.right_cursor >= len(self.right_entries):
+            self.right_cursor = len(self.right_entries) - 1
+        self.right_selected = {i for i in self.right_selected if i < len(self.right_entries)}
+
+    def get_entries(self):
+        """Get entries for the active pane"""
+        return self.left_entries if self.active_pane == 'left' else self.right_entries
+
+    def get_cursor(self):
+        return self.left_cursor if self.active_pane == 'left' else self.right_cursor
+
+    def set_cursor(self, val):
+        if self.active_pane == 'left':
+            self.left_cursor = val
+        else:
+            self.right_cursor = val
+
+    def get_scroll(self):
+        return self.left_scroll if self.active_pane == 'left' else self.right_scroll
+
+    def set_scroll(self, val):
+        if self.active_pane == 'left':
+            self.left_scroll = val
+        else:
+            self.right_scroll = val
+
+    def get_selected(self):
+        return self.left_selected if self.active_pane == 'left' else self.right_selected
+
+    def get_path(self):
+        return self.left_path if self.active_pane == 'left' else self.right_path
+
+    def set_path(self, path):
+        if self.active_pane == 'left':
+            self.left_path = path
+        else:
+            self.right_path = path
+
+    def get_other_path(self):
+        return self.right_path if self.active_pane == 'left' else self.left_path
+
+    def format_size(self, size_bytes):
+        """Format file size to human readable"""
+        if size_bytes < 0:
+            return "?"
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f}K"
+        elif size_bytes < 1024 * 1024 * 1024:
+            return f"{size_bytes / 1024 / 1024:.1f}M"
+        else:
+            return f"{size_bytes / 1024 / 1024 / 1024:.1f}G"
+
+    def format_date(self, timestamp):
+        """Format timestamp for display"""
+        if timestamp == 0:
+            return "?"
+        dt = datetime.fromtimestamp(timestamp)
+        now = datetime.now()
+        if dt.date() == now.date():
+            return dt.strftime("%H:%M")
+        elif dt.year == now.year:
+            return dt.strftime("%b %d")
+        else:
+            return dt.strftime("%Y-%m")
+
+    def format_mode(self, mode):
+        """Format permission mode as rwx string"""
+        result = ""
+        for shift in [6, 3, 0]:
+            bits = (mode >> shift) & 7
+            result += "r" if bits & 4 else "-"
+            result += "w" if bits & 2 else "-"
+            result += "x" if bits & 1 else "-"
+        return result
+
+    def get_file_color(self, entry):
+        """Get color pair for a file entry"""
+        if entry['is_dir']:
+            return curses.color_pair(1) | curses.A_BOLD
+        if entry['is_link']:
+            return curses.color_pair(4)
+
+        ext = entry['path'].suffix.lower()
+
+        # Archives
+        if ext in {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz',
+                   '.txz', '.rar', '.7z', '.cab', '.iso', '.dmg'}:
+            return curses.color_pair(3)
+
+        # Media
+        if ext in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif',
+                   '.webp', '.svg', '.ico', '.heic', '.avif', '.mp4', '.mkv',
+                   '.avi', '.mov', '.wmv', '.flv', '.webm', '.mp3', '.flac',
+                   '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma'}:
+            return curses.color_pair(4)
+
+        # Executables
+        if entry['mode'] & stat.S_IXUSR:
+            return curses.color_pair(2)
+
+        return curses.color_pair(6)
+
+    def set_message(self, msg, color=curses.COLOR_GREEN):
+        """Set a status message"""
+        self.message = msg
+        self.message_color = color
+        self.message_time = time.time()
+
+    def draw_pane(self, stdscr, entries, path, cursor, scroll, selected,
+                  start_x, width, pane_height, is_active):
+        """Draw a single file pane"""
+        height, _ = stdscr.getmaxyx()
+
+        # Header with path
+        header_attr = curses.color_pair(7) if is_active else curses.color_pair(10)
+        path_str = str(path)
+        if len(path_str) > width - 2:
+            path_str = "..." + path_str[-(width - 5):]
+        header = f" {path_str} ".ljust(width)[:width]
+
+        try:
+            stdscr.addstr(1, start_x, header, header_attr | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        # Column headers
+        col_header = " Name"
+        remaining = width - 20
+        if remaining > 0:
+            col_header = col_header.ljust(remaining) + "Size".rjust(8) + " " + "Date".rjust(6) + " " + "Perms".rjust(3)
+        col_header = col_header[:width]
+        try:
+            stdscr.addstr(2, start_x, col_header, curses.A_DIM)
+        except curses.error:
+            pass
+
+        # ".." entry at top
+        list_start_y = 3
+        dotdot_attr = curses.color_pair(1) | curses.A_BOLD
+        if cursor == -1 and is_active:
+            dotdot_attr = curses.color_pair(9) | curses.A_BOLD
+        up_str = " ..".ljust(width)[:width]
+        try:
+            stdscr.addstr(list_start_y, start_x, up_str, dotdot_attr)
+        except curses.error:
+            pass
+
+        # File list
+        list_area = pane_height - 1  # -1 for ".."
+
+        # Ensure cursor is visible
+        if cursor >= 0:
+            if cursor < scroll:
+                scroll = cursor
+            elif cursor >= scroll + list_area:
+                scroll = cursor - list_area + 1
+
+        # Update scroll
+        if is_active:
+            self.set_scroll(scroll)
+
+        visible_entries = entries[scroll:scroll + list_area]
+
+        for i, entry in enumerate(visible_entries):
+            idx = scroll + i
+            y = list_start_y + 1 + i
+            if y >= height - 2:
+                break
+
+            is_cursor = (idx == cursor and is_active)
+            is_selected = idx in selected
+
+            # Build display line
+            name = entry['name']
+            if entry['is_dir']:
+                name = name + "/"
+
+            if entry['is_link']:
+                name = name + " →"
+
+            # Size column
+            if entry['is_dir']:
+                if entry['size'] < 0:
+                    size_str = "?"
+                else:
+                    size_str = f"{entry['size']} items" if entry['size'] != 1 else "1 item"
+            else:
+                size_str = self.format_size(entry['size'])
+
+            date_str = self.format_date(entry['mtime'])
+            perm_str = f"{entry['mode'] & 0o777:03o}" if entry['mode'] else "???"
+
+            # Calculate name column width
+            meta_width = len(size_str) + len(date_str) + len(perm_str) + 5
+            name_width = max(10, width - meta_width)
+            if len(name) > name_width:
+                name = name[:name_width - 1] + "~"
+
+            line = f" {name.ljust(name_width)} {size_str.rjust(8)} {date_str.rjust(6)} {perm_str.rjust(3)}"
+            line = line[:width]
+
+            # Choose attributes
+            if is_cursor and is_selected:
+                attr = curses.color_pair(12) | curses.A_BOLD
+            elif is_cursor:
+                attr = curses.color_pair(9) | curses.A_BOLD
+            elif is_selected:
+                attr = curses.color_pair(8) | curses.A_BOLD
+            else:
+                attr = self.get_file_color(entry)
+
+            try:
+                stdscr.addstr(y, start_x, line.ljust(width)[:width], attr)
+            except curses.error:
+                pass
+
+        # Fill remaining space
+        for i in range(len(visible_entries), list_area):
+            y = list_start_y + 1 + i
+            if y >= height - 2:
+                break
+            try:
+                stdscr.addstr(y, start_x, " " * width, curses.color_pair(6))
+            except curses.error:
+                pass
+
+        # Pane footer with counts
+        total = len(entries)
+        sel_count = len(selected)
+        if sel_count > 0:
+            # Calculate selected size
+            sel_size = sum(entries[i]['size'] for i in selected
+                         if i < len(entries) and not entries[i]['is_dir'])
+            footer = f" {sel_count} selected ({self.format_size(sel_size)}) | {total} items"
+        else:
+            footer = f" {total} items"
+
+        dirs_count = sum(1 for e in entries if e['is_dir'])
+        files_count = total - dirs_count
+        footer += f" ({dirs_count}d/{files_count}f)"
+        footer = footer[:width].ljust(width)
+
+        footer_attr = curses.color_pair(7) if is_active else curses.color_pair(10)
+        try:
+            stdscr.addstr(height - 2, start_x, footer, footer_attr)
+        except curses.error:
+            pass
+
+    def draw(self, stdscr):
+        """Draw the full interface"""
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+
+        if height < 10 or width < 40:
+            try:
+                stdscr.addstr(0, 0, "Terminal too small", curses.color_pair(5))
+            except curses.error:
+                pass
+            stdscr.refresh()
+            return
+
+        # Title bar
+        title = " FILE TRANSFER "
+        sort_indicator = f" Sort: {self.sort_by} {'↑' if not self.sort_reverse else '↓'} "
+        hidden_indicator = " [H]idden " if self.show_hidden else ""
+        title_bar = title + sort_indicator + hidden_indicator
+        title_bar = title_bar.center(width)[:width]
+        try:
+            stdscr.addstr(0, 0, title_bar, curses.color_pair(7) | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        # Calculate pane widths
+        divider_x = width // 2
+        left_width = divider_x
+        right_width = width - divider_x
+
+        pane_height = height - 5  # title + header + col_header + footer + hotkey bar
+
+        # Draw divider
+        for y in range(1, height - 2):
+            try:
+                stdscr.addch(y, divider_x - 1, curses.ACS_VLINE, curses.color_pair(1))
+            except curses.error:
+                pass
+
+        # Draw panes
+        self.draw_pane(
+            stdscr, self.left_entries, self.left_path,
+            self.left_cursor if self.active_pane == 'left' else self.left_cursor,
+            self.left_scroll, self.left_selected,
+            0, left_width - 1, pane_height,
+            self.active_pane == 'left'
+        )
+
+        self.draw_pane(
+            stdscr, self.right_entries, self.right_path,
+            self.right_cursor if self.active_pane == 'right' else self.right_cursor,
+            self.right_scroll, self.right_selected,
+            divider_x, right_width, pane_height,
+            self.active_pane == 'right'
+        )
+
+        # Hotkey bar at bottom
+        hotkeys = [
+            ("Tab", "Switch"),
+            ("Enter", "Open"),
+            ("Space", "Select"),
+            ("c", "Copy"),
+            ("m", "Move"),
+            ("d", "Delete"),
+            ("r", "Rename"),
+            ("n", "MkDir"),
+            ("p", "SetPath"),
+            (".", "Hidden"),
+            ("s", "Sort"),
+            ("a", "SelAll"),
+            ("=", "Sync"),
+            ("i", "Info"),
+            ("q", "Quit"),
+        ]
+        hotkey_str = ""
+        for key, desc in hotkeys:
+            segment = f" {key}:{desc} "
+            if len(hotkey_str) + len(segment) < width:
+                hotkey_str += segment
+        hotkey_str = hotkey_str[:width].ljust(width)
+
+        try:
+            stdscr.addstr(height - 1, 0, hotkey_str, curses.color_pair(13) | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        # Status message
+        if self.message and (time.time() - self.message_time < 5):
+            if self.message_color == curses.COLOR_RED:
+                msg_attr = curses.color_pair(5) | curses.A_BOLD
+            elif self.message_color == curses.COLOR_YELLOW:
+                msg_attr = curses.color_pair(3) | curses.A_BOLD
+            else:
+                msg_attr = curses.color_pair(2) | curses.A_BOLD
+
+            msg = f" {self.message} "[:width]
+            try:
+                stdscr.addstr(height - 3, 0, msg.ljust(width), msg_attr)
+            except curses.error:
+                pass
+
+        stdscr.refresh()
+
+    def navigate_into(self, entry):
+        """Navigate into a directory"""
+        if entry['is_dir']:
+            try:
+                # Test access
+                list(entry['path'].iterdir())
+                self.set_path(entry['path'].resolve())
+                self.set_cursor(0)
+                self.set_scroll(0)
+                self.get_selected().clear()
+                if self.active_pane == 'left':
+                    self.refresh_left()
+                else:
+                    self.refresh_right()
+            except PermissionError:
+                self.set_message(f"Permission denied: {entry['name']}", curses.COLOR_RED)
+            except OSError as e:
+                self.set_message(f"Error: {e}", curses.COLOR_RED)
+
+    def navigate_up(self):
+        """Navigate to parent directory"""
+        path = self.get_path()
+        parent = path.parent
+        if parent != path:
+            old_name = path.name
+            self.set_path(parent)
+            self.set_scroll(0)
+            self.get_selected().clear()
+            if self.active_pane == 'left':
+                self.refresh_left()
+            else:
+                self.refresh_right()
+            # Try to position cursor on the directory we came from
+            entries = self.get_entries()
+            for i, e in enumerate(entries):
+                if e['name'] == old_name:
+                    self.set_cursor(i)
+                    break
+            else:
+                self.set_cursor(0)
+
+    def get_items_to_operate(self):
+        """Get list of entries to operate on (selected or cursor item)"""
+        entries = self.get_entries()
+        selected = self.get_selected()
+
+        if not entries:
+            return []
+
+        if selected:
+            return [entries[i] for i in sorted(selected) if i < len(entries)]
+        else:
+            cursor = self.get_cursor()
+            if 0 <= cursor < len(entries):
+                return [entries[cursor]]
+            return []
+
+    def confirm_dialog(self, stdscr, title, message, options="[y/n]"):
+        """Show a confirmation dialog, returns True/False"""
+        height, width = stdscr.getmaxyx()
+
+        box_width = min(60, width - 4)
+        lines = []
+        # Word wrap message
+        words = message.split()
+        line = ""
+        for word in words:
+            if len(line) + len(word) + 1 <= box_width - 4:
+                line = f"{line} {word}" if line else word
+            else:
+                lines.append(line)
+                line = word
+        if line:
+            lines.append(line)
+
+        box_height = len(lines) + 5
+        start_y = (height - box_height) // 2
+        start_x = (width - box_width) // 2
+
+        # Draw box
+        for y in range(box_height):
+            try:
+                stdscr.addstr(start_y + y, start_x, " " * box_width, curses.color_pair(7))
+            except curses.error:
+                pass
+
+        try:
+            stdscr.addstr(start_y, start_x, f"┌{'─' * (box_width - 2)}┐", curses.color_pair(7))
+            stdscr.addstr(start_y + 1, start_x, f"│{title.center(box_width - 2)}│", curses.color_pair(7) | curses.A_BOLD)
+            stdscr.addstr(start_y + 2, start_x, f"├{'─' * (box_width - 2)}┤", curses.color_pair(7))
+
+            for i, line_text in enumerate(lines):
+                stdscr.addstr(start_y + 3 + i, start_x,
+                            f"│ {line_text.ljust(box_width - 4)} │", curses.color_pair(7))
+
+            opt_line = f"│{options.center(box_width - 2)}│"
+            stdscr.addstr(start_y + 3 + len(lines), start_x, opt_line, curses.color_pair(13) | curses.A_BOLD)
+            stdscr.addstr(start_y + 4 + len(lines), start_x, f"└{'─' * (box_width - 2)}┘", curses.color_pair(7))
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+
+        while True:
+            key = stdscr.getch()
+            if key in (ord('y'), ord('Y')):
+                return True
+            elif key in (ord('n'), ord('N'), 27):  # n or Escape
+                return False
+
+    def text_input(self, stdscr, prompt, default=""):
+        """Get text input from user. Returns string or None if cancelled."""
+        height, width = stdscr.getmaxyx()
+
+        box_width = min(70, width - 4)
+        box_height = 5
+        start_y = (height - box_height) // 2
+        start_x = (width - box_width) // 2
+
+        text = default
+        cursor_pos = len(text)
+
+        curses.curs_set(1)
+
+        while True:
+            # Draw input box
+            for y in range(box_height):
+                try:
+                    stdscr.addstr(start_y + y, start_x, " " * box_width, curses.color_pair(7))
+                except curses.error:
+                    pass
+
+            try:
+                stdscr.addstr(start_y, start_x, f"┌{'─' * (box_width - 2)}┐", curses.color_pair(7))
+                stdscr.addstr(start_y + 1, start_x,
+                            f"│ {prompt.ljust(box_width - 4)} │", curses.color_pair(7) | curses.A_BOLD)
+                stdscr.addstr(start_y + 2, start_x, f"├{'─' * (box_width - 2)}┤", curses.color_pair(7))
+
+                # Input field
+                input_width = box_width - 4
+                # Show the portion of text around cursor
+                visible_start = max(0, cursor_pos - input_width + 5)
+                visible_text = text[visible_start:visible_start + input_width]
+                stdscr.addstr(start_y + 3, start_x,
+                            f"│ {visible_text.ljust(input_width)} │", curses.color_pair(6))
+
+                stdscr.addstr(start_y + 4, start_x, f"└{'─' * (box_width - 2)}┘", curses.color_pair(7))
+
+                # Position cursor
+                cursor_x = start_x + 2 + (cursor_pos - visible_start)
+                stdscr.move(start_y + 3, min(cursor_x, start_x + box_width - 3))
+            except curses.error:
+                pass
+
+            stdscr.refresh()
+
+            key = stdscr.getch()
+
+            if key == 27:  # Escape
+                curses.curs_set(0)
+                return None
+            elif key in (curses.KEY_ENTER, 10, 13):
+                curses.curs_set(0)
+                return text
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                if cursor_pos > 0:
+                    text = text[:cursor_pos - 1] + text[cursor_pos:]
+                    cursor_pos -= 1
+            elif key == curses.KEY_DC:  # Delete
+                if cursor_pos < len(text):
+                    text = text[:cursor_pos] + text[cursor_pos + 1:]
+            elif key == curses.KEY_LEFT:
+                cursor_pos = max(0, cursor_pos - 1)
+            elif key == curses.KEY_RIGHT:
+                cursor_pos = min(len(text), cursor_pos + 1)
+            elif key == curses.KEY_HOME:
+                cursor_pos = 0
+            elif key == curses.KEY_END:
+                cursor_pos = len(text)
+            elif key == 21:  # Ctrl+U - clear line
+                text = ""
+                cursor_pos = 0
+            elif key == 23:  # Ctrl+W - delete word back
+                if cursor_pos > 0:
+                    # Find previous word boundary
+                    pos = cursor_pos - 1
+                    while pos > 0 and text[pos - 1] == ' ':
+                        pos -= 1
+                    while pos > 0 and text[pos - 1] != ' ':
+                        pos -= 1
+                    text = text[:pos] + text[cursor_pos:]
+                    cursor_pos = pos
+            elif 32 <= key <= 126:  # Printable characters
+                text = text[:cursor_pos] + chr(key) + text[cursor_pos:]
+                cursor_pos += 1
+
+    def do_copy(self, stdscr):
+        """Copy selected items to the other pane's directory"""
+        items = self.get_items_to_operate()
+        if not items:
+            self.set_message("Nothing to copy", curses.COLOR_YELLOW)
+            return
+
+        dest = self.get_other_path()
+        names = ", ".join(e['name'] for e in items[:3])
+        if len(items) > 3:
+            names += f" ... and {len(items) - 3} more"
+
+        msg = f"Copy {len(items)} item(s) to {dest}? ({names})"
+        if not self.confirm_dialog(stdscr, "COPY", msg):
+            self.set_message("Copy cancelled", curses.COLOR_YELLOW)
+            return
+
+        copied = 0
+        errors = 0
+        for entry in items:
+            src = entry['path']
+            dst = dest / entry['name']
+
+            # Handle name collision
+            if dst.exists():
+                base = src.stem
+                ext = src.suffix
+                counter = 1
+                while dst.exists():
+                    if entry['is_dir']:
+                        dst = dest / f"{entry['name']}_{counter}"
+                    else:
+                        dst = dest / f"{base}_{counter}{ext}"
+                    counter += 1
+
+            try:
+                if entry['is_dir']:
+                    shutil.copytree(str(src), str(dst))
+                else:
+                    shutil.copy2(str(src), str(dst))
+                copied += 1
+            except PermissionError:
+                errors += 1
+                self.set_message(f"Permission denied: {entry['name']}", curses.COLOR_RED)
+            except OSError as e:
+                errors += 1
+                self.set_message(f"Error copying {entry['name']}: {e}", curses.COLOR_RED)
+
+        self.op_stats['copied'] += copied
+        self.op_stats['errors'] += errors
+
+        self.get_selected().clear()
+        self.refresh_panes()
+
+        if errors == 0:
+            self.set_message(f"Copied {copied} item(s)", curses.COLOR_GREEN)
+        else:
+            self.set_message(f"Copied {copied}, {errors} error(s)", curses.COLOR_YELLOW)
+
+    def do_move(self, stdscr):
+        """Move selected items to the other pane's directory"""
+        items = self.get_items_to_operate()
+        if not items:
+            self.set_message("Nothing to move", curses.COLOR_YELLOW)
+            return
+
+        dest = self.get_other_path()
+        names = ", ".join(e['name'] for e in items[:3])
+        if len(items) > 3:
+            names += f" ... and {len(items) - 3} more"
+
+        msg = f"Move {len(items)} item(s) to {dest}? ({names})"
+        if not self.confirm_dialog(stdscr, "MOVE", msg):
+            self.set_message("Move cancelled", curses.COLOR_YELLOW)
+            return
+
+        moved = 0
+        errors = 0
+        for entry in items:
+            src = entry['path']
+            dst = dest / entry['name']
+
+            # Handle name collision
+            if dst.exists():
+                base = src.stem
+                ext = src.suffix
+                counter = 1
+                while dst.exists():
+                    if entry['is_dir']:
+                        dst = dest / f"{entry['name']}_{counter}"
+                    else:
+                        dst = dest / f"{base}_{counter}{ext}"
+                    counter += 1
+
+            try:
+                shutil.move(str(src), str(dst))
+                moved += 1
+            except PermissionError:
+                errors += 1
+                self.set_message(f"Permission denied: {entry['name']}", curses.COLOR_RED)
+            except OSError as e:
+                errors += 1
+                self.set_message(f"Error moving {entry['name']}: {e}", curses.COLOR_RED)
+
+        self.op_stats['moved'] += moved
+        self.op_stats['errors'] += errors
+
+        self.get_selected().clear()
+        self.refresh_panes()
+
+        if errors == 0:
+            self.set_message(f"Moved {moved} item(s)", curses.COLOR_GREEN)
+        else:
+            self.set_message(f"Moved {moved}, {errors} error(s)", curses.COLOR_YELLOW)
+
+    def do_delete(self, stdscr):
+        """Delete selected items"""
+        items = self.get_items_to_operate()
+        if not items:
+            self.set_message("Nothing to delete", curses.COLOR_YELLOW)
+            return
+
+        names = ", ".join(e['name'] for e in items[:3])
+        if len(items) > 3:
+            names += f" ... and {len(items) - 3} more"
+
+        msg = f"DELETE {len(items)} item(s)? This cannot be undone! ({names})"
+        if not self.confirm_dialog(stdscr, "⚠ DELETE", msg):
+            self.set_message("Delete cancelled", curses.COLOR_YELLOW)
+            return
+
+        deleted = 0
+        errors = 0
+        for entry in items:
+            try:
+                if entry['is_dir']:
+                    shutil.rmtree(str(entry['path']))
+                else:
+                    entry['path'].unlink()
+                deleted += 1
+            except PermissionError:
+                errors += 1
+                self.set_message(f"Permission denied: {entry['name']}", curses.COLOR_RED)
+            except OSError as e:
+                errors += 1
+                self.set_message(f"Error deleting {entry['name']}: {e}", curses.COLOR_RED)
+
+        self.op_stats['deleted'] += deleted
+        self.op_stats['errors'] += errors
+
+        self.get_selected().clear()
+        self.refresh_panes()
+
+        if errors == 0:
+            self.set_message(f"Deleted {deleted} item(s)", curses.COLOR_GREEN)
+        else:
+            self.set_message(f"Deleted {deleted}, {errors} error(s)", curses.COLOR_YELLOW)
+
+    def do_rename(self, stdscr):
+        """Rename the item under cursor"""
+        entries = self.get_entries()
+        cursor = self.get_cursor()
+        if not entries or cursor < 0 or cursor >= len(entries):
+            self.set_message("Nothing to rename", curses.COLOR_YELLOW)
+            return
+
+        entry = entries[cursor]
+        new_name = self.text_input(stdscr, "Enter new name:", entry['name'])
+
+        if new_name is None or new_name == entry['name'] or not new_name.strip():
+            self.set_message("Rename cancelled", curses.COLOR_YELLOW)
+            return
+
+        new_name = new_name.strip()
+
+        # Prevent path traversal
+        if '/' in new_name or '\\' in new_name:
+            self.set_message("Name cannot contain path separators", curses.COLOR_RED)
+            return
+
+        src = entry['path']
+        dst = src.parent / new_name
+
+        if dst.exists():
+            self.set_message(f"'{new_name}' already exists", curses.COLOR_RED)
+            return
+
+        try:
+            src.rename(dst)
+            self.set_message(f"Renamed to '{new_name}'", curses.COLOR_GREEN)
+        except PermissionError:
+            self.set_message("Permission denied", curses.COLOR_RED)
+        except OSError as e:
+            self.set_message(f"Error: {e}", curses.COLOR_RED)
+
+        if self.active_pane == 'left':
+            self.refresh_left()
+        else:
+            self.refresh_right()
+
+    def do_mkdir(self, stdscr):
+        """Create a new directory in the active pane"""
+        name = self.text_input(stdscr, "New directory name:")
+
+        if name is None or not name.strip():
+            self.set_message("Mkdir cancelled", curses.COLOR_YELLOW)
+            return
+
+        name = name.strip()
+
+        # Prevent path traversal
+        if '/' in name or '\\' in name:
+            self.set_message("Name cannot contain path separators", curses.COLOR_RED)
+            return
+
+        path = self.get_path() / name
+
+        if path.exists():
+            self.set_message(f"'{name}' already exists", curses.COLOR_RED)
+            return
+
+        try:
+            path.mkdir(parents=False)
+            self.set_message(f"Created directory '{name}'", curses.COLOR_GREEN)
+        except PermissionError:
+            self.set_message("Permission denied", curses.COLOR_RED)
+        except OSError as e:
+            self.set_message(f"Error: {e}", curses.COLOR_RED)
+
+        if self.active_pane == 'left':
+            self.refresh_left()
+        else:
+            self.refresh_right()
+
+    def do_set_path(self, stdscr):
+        """Set the path of the active pane via text input"""
+        current = str(self.get_path())
+        new_path = self.text_input(stdscr, f"Enter path for {'LEFT' if self.active_pane == 'left' else 'RIGHT'} pane:", current)
+
+        if new_path is None or not new_path.strip():
+            self.set_message("Path change cancelled", curses.COLOR_YELLOW)
+            return
+
+        new_path = new_path.strip()
+
+        # Expand ~ and resolve
+        expanded = Path(os.path.expanduser(new_path)).resolve()
+
+        if not expanded.is_dir():
+            self.set_message(f"Not a directory: {new_path}", curses.COLOR_RED)
+            return
+
+        self.set_path(expanded)
+        self.set_cursor(0)
+        self.set_scroll(0)
+        self.get_selected().clear()
+        if self.active_pane == 'left':
+            self.refresh_left()
+        else:
+            self.refresh_right()
+        self.set_message(f"Path set to {expanded}", curses.COLOR_GREEN)
+
+    def do_sync_paths(self, stdscr):
+        """Set the other pane's path to match the active pane's path"""
+        path = self.get_path()
+        if self.active_pane == 'left':
+            self.right_path = path
+            self.right_cursor = 0
+            self.right_scroll = 0
+            self.right_selected.clear()
+            self.refresh_right()
+        else:
+            self.left_path = path
+            self.left_cursor = 0
+            self.left_scroll = 0
+            self.left_selected.clear()
+            self.refresh_left()
+        self.set_message(f"Other pane synced to {path}", curses.COLOR_GREEN)
+
+    def do_select_all(self):
+        """Toggle select all in active pane"""
+        entries = self.get_entries()
+        selected = self.get_selected()
+
+        if len(selected) == len(entries):
+            selected.clear()
+            self.set_message("Selection cleared", curses.COLOR_GREEN)
+        else:
+            selected.clear()
+            selected.update(range(len(entries)))
+            self.set_message(f"Selected all {len(entries)} items", curses.COLOR_GREEN)
+
+    def do_show_info(self, stdscr):
+        """Show detailed info about the item under cursor"""
+        entries = self.get_entries()
+        cursor = self.get_cursor()
+        if not entries or cursor < 0 or cursor >= len(entries):
+            self.set_message("Nothing to inspect", curses.COLOR_YELLOW)
+            return
+
+        entry = entries[cursor]
+        height, width = stdscr.getmaxyx()
+
+        info_lines = []
+        info_lines.append(f"Name: {entry['name']}")
+        info_lines.append(f"Path: {entry['path']}")
+        info_lines.append(f"Type: {'Directory' if entry['is_dir'] else 'File'}")
+
+        if entry['is_link']:
+            try:
+                target = os.readlink(str(entry['path']))
+                info_lines.append(f"Link target: {target}")
+            except OSError:
+                info_lines.append("Link target: <unreadable>")
+
+        if not entry['is_dir']:
+            info_lines.append(f"Size: {self.format_size(entry['size'])} ({entry['size']:,} bytes)")
+        else:
+            if entry['size'] >= 0:
+                info_lines.append(f"Items: {entry['size']}")
+            # Calculate total size of directory
+            try:
+                total = sum(f.stat().st_size for f in entry['path'].rglob('*') if f.is_file())
+                info_lines.append(f"Total size: {self.format_size(total)} ({total:,} bytes)")
+            except (PermissionError, OSError):
+                info_lines.append("Total size: <unable to calculate>")
+
+        if entry['mtime']:
+            dt = datetime.fromtimestamp(entry['mtime'])
+            info_lines.append(f"Modified: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        if entry['mode']:
+            info_lines.append(f"Permissions: {self.format_mode(entry['mode'])} ({entry['mode'] & 0o777:03o})")
+            try:
+                st = entry['path'].stat()
+                owner = pwd.getpwuid(st.st_uid).pw_name
+                group = grp.getgrgid(st.st_gid).gr_name
+                info_lines.append(f"Owner: {owner}:{group}")
+            except (KeyError, OSError):
+                pass
+
+        # Draw info dialog
+        box_width = min(max(len(l) for l in info_lines) + 6, width - 4)
+        box_height = len(info_lines) + 5
+        start_y = (height - box_height) // 2
+        start_x = (width - box_width) // 2
+
+        for y in range(box_height):
+            try:
+                stdscr.addstr(start_y + y, start_x, " " * box_width, curses.color_pair(7))
+            except curses.error:
+                pass
+
+        try:
+            stdscr.addstr(start_y, start_x, f"┌{'─' * (box_width - 2)}┐", curses.color_pair(7))
+            stdscr.addstr(start_y + 1, start_x,
+                        f"│{'FILE INFO'.center(box_width - 2)}│", curses.color_pair(7) | curses.A_BOLD)
+            stdscr.addstr(start_y + 2, start_x, f"├{'─' * (box_width - 2)}┤", curses.color_pair(7))
+
+            for i, line_text in enumerate(info_lines):
+                display = line_text[:box_width - 4]
+                stdscr.addstr(start_y + 3 + i, start_x,
+                            f"│ {display.ljust(box_width - 4)} │", curses.color_pair(7))
+
+            press = "Press any key to close"
+            stdscr.addstr(start_y + 3 + len(info_lines), start_x,
+                        f"│{press.center(box_width - 2)}│", curses.color_pair(13))
+            stdscr.addstr(start_y + 4 + len(info_lines), start_x,
+                        f"└{'─' * (box_width - 2)}┘", curses.color_pair(7))
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+        stdscr.getch()
+
+    def do_swap_panes(self):
+        """Swap left and right pane contents"""
+        self.left_path, self.right_path = self.right_path, self.left_path
+        self.left_entries, self.right_entries = self.right_entries, self.left_entries
+        self.left_cursor, self.right_cursor = self.right_cursor, self.left_cursor
+        self.left_scroll, self.right_scroll = self.right_scroll, self.left_scroll
+        self.left_selected, self.right_selected = self.right_selected, self.left_selected
+        self.set_message("Panes swapped", curses.COLOR_GREEN)
+
+    def cycle_sort(self):
+        """Cycle through sort modes"""
+        modes = ['name', 'size', 'date', 'type']
+        idx = modes.index(self.sort_by) if self.sort_by in modes else 0
+        idx = (idx + 1) % len(modes)
+        self.sort_by = modes[idx]
+        self.refresh_panes()
+        self.set_message(f"Sort: {self.sort_by}", curses.COLOR_GREEN)
+
+    def handle_input(self, stdscr, key):
+        """Handle keyboard input"""
+        entries = self.get_entries()
+        cursor = self.get_cursor()
+        selected = self.get_selected()
+
+        if key == ord('q') or key == ord('Q'):
+            return False
+
+        elif key == 9:  # Tab
+            self.active_pane = 'right' if self.active_pane == 'left' else 'left'
+
+        elif key == curses.KEY_UP or key == ord('k'):
+            if cursor > 0:
+                self.set_cursor(cursor - 1)
+            elif cursor == 0:
+                self.set_cursor(-1)  # ".." entry
+
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            if cursor < len(entries) - 1:
+                self.set_cursor(cursor + 1)
+
+        elif key == curses.KEY_PPAGE:  # Page Up
+            height, _ = stdscr.getmaxyx()
+            page = height - 6
+            self.set_cursor(max(-1, cursor - page))
+
+        elif key == curses.KEY_NPAGE:  # Page Down
+            height, _ = stdscr.getmaxyx()
+            page = height - 6
+            self.set_cursor(min(len(entries) - 1, cursor + page))
+
+        elif key == curses.KEY_HOME:
+            self.set_cursor(-1)
+
+        elif key == curses.KEY_END:
+            self.set_cursor(len(entries) - 1)
+
+        elif key in (curses.KEY_ENTER, 10, 13):
+            if cursor == -1:
+                self.navigate_up()
+            elif entries and 0 <= cursor < len(entries):
+                entry = entries[cursor]
+                if entry['is_dir']:
+                    self.navigate_into(entry)
+
+        elif key == curses.KEY_BACKSPACE or key == 127:
+            self.navigate_up()
+
+        elif key == ord(' '):  # Space - toggle selection
+            if 0 <= cursor < len(entries):
+                if cursor in selected:
+                    selected.discard(cursor)
+                else:
+                    selected.add(cursor)
+                # Move cursor down
+                if cursor < len(entries) - 1:
+                    self.set_cursor(cursor + 1)
+
+        elif key == ord('c') or key == ord('C'):
+            self.do_copy(stdscr)
+
+        elif key == ord('m') or key == ord('M'):
+            self.do_move(stdscr)
+
+        elif key == ord('d') or key == ord('D'):
+            self.do_delete(stdscr)
+
+        elif key == ord('r') or key == ord('R'):
+            self.do_rename(stdscr)
+
+        elif key == ord('n') or key == ord('N'):
+            self.do_mkdir(stdscr)
+
+        elif key == ord('p') or key == ord('P'):
+            self.do_set_path(stdscr)
+
+        elif key == ord('.') or key == ord('h') or key == ord('H'):
+            self.show_hidden = not self.show_hidden
+            self.refresh_panes()
+            self.set_message("Hidden files: " + ("shown" if self.show_hidden else "hidden"),
+                           curses.COLOR_GREEN)
+
+        elif key == ord('s') or key == ord('S'):
+            self.cycle_sort()
+
+        elif key == ord('a') or key == ord('A'):
+            self.do_select_all()
+
+        elif key == ord('='):
+            self.do_sync_paths(stdscr)
+
+        elif key == ord('i') or key == ord('I'):
+            self.do_show_info(stdscr)
+
+        elif key == ord('w') or key == ord('W'):
+            self.do_swap_panes()
+
+        elif key == curses.KEY_F5 or key == ord('f') or key == ord('F'):
+            self.refresh_panes()
+            self.set_message("Refreshed", curses.COLOR_GREEN)
+
+        return True
+
+    def run(self, stdscr):
+        """Main application loop"""
+        self.stdscr = stdscr
+
+        curses.curs_set(0)
+        self.init_colors()
+
+        stdscr.timeout(500)  # Half-second timeout for message clearing
+
+        self.refresh_panes()
+
+        # Start with cursor at first entry (not "..")
+        self.left_cursor = 0 if self.left_entries else -1
+        self.right_cursor = 0 if self.right_entries else -1
+
+        while True:
+            self.draw(stdscr)
+
+            try:
+                key = stdscr.getch()
+            except curses.error:
+                continue
+
+            if key == -1:  # Timeout
+                continue
+
+            if key == curses.KEY_RESIZE:
+                stdscr.clear()
+                continue
+
+            if not self.handle_input(stdscr, key):
+                break
+
+
+def main():
+    """Entry point"""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Dual-pane file transfer tool")
+    parser.add_argument('left', nargs='?', default=None,
+                       help='Left pane starting directory (default: current directory)')
+    parser.add_argument('right', nargs='?', default=None,
+                       help='Right pane starting directory (default: home directory)')
+    args = parser.parse_args()
+
+    left = args.left
+    right = args.right
+
+    # Resolve paths
+    if left:
+        left = str(Path(os.path.expanduser(left)).resolve())
+    if right:
+        right = str(Path(os.path.expanduser(right)).resolve())
+
+    app = FileTransfer(left, right)
+
+    try:
+        curses.wrapper(app.run)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        # Make sure terminal is restored
+        try:
+            curses.endwin()
+        except Exception:
+            pass
+        print(f"\033[91mError: {e}\033[0m")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
