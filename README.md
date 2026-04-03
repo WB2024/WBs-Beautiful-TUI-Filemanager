@@ -245,8 +245,8 @@ git clone https://github.com/WB2024/WBs-Beautiful-TUI-Filemanager.git
 cd WBs-Beautiful-TUI-Filemanager
 
 # 2. Copy all utilities to system path
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort /usr/local/bin/video-player /usr/local/bin/essentia-tagger
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger file-transfer /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort /usr/local/bin/video-player /usr/local/bin/essentia-tagger /usr/local/bin/file-transfer
 
 # 3. Run it!
 filemanager
@@ -263,6 +263,7 @@ filemanager
 - `file-sort` - File organization utility (sort by type, extension, size, date)
 - `video-player` - Terminal video player (using buddy)
 - `essentia-tagger` - ML-powered audio genre/mood tagger (using Essentia)
+- `file-transfer` - Dual-pane file transfer and management tool
 
 ### Manual Installation
 
@@ -278,12 +279,13 @@ wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/file-sort
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/video-player
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/essentia-tagger
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/file-transfer
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger file-transfer
 
 # 3. Move to PATH
-sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger file-transfer /usr/local/bin/
 
 # 4. Run from anywhere
 filemanager
@@ -293,7 +295,7 @@ filemanager
 
 ```bash
 # Check if all utilities are installed correctly
-which filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger
+which filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger file-transfer
 
 # Should output:
 # /usr/local/bin/filemanager
@@ -306,6 +308,7 @@ which filemanager extractfile fixperms audio-to-flac extract-and-convert image-c
 # /usr/local/bin/file-sort
 # /usr/local/bin/video-player
 # /usr/local/bin/essentia-tagger
+# /usr/local/bin/file-transfer
 ```
 ## 🔄 Updating
 
@@ -321,8 +324,8 @@ cd /path/to/your/WBs-Beautiful-TUI-Filemanager
 git pull origin main
 
 # 3. Copy updated files to system path (replace old versions)
-sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger /usr/local/bin/
-sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort /usr/local/bin/video-player /usr/local/bin/essentia-tagger
+sudo cp filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger file-transfer /usr/local/bin/
+sudo chmod +x /usr/local/bin/filemanager /usr/local/bin/extractfile /usr/local/bin/fixperms /usr/local/bin/audio-to-flac /usr/local/bin/extract-and-convert /usr/local/bin/image-convert /usr/local/bin/iso2god /usr/local/bin/file-sort /usr/local/bin/video-player /usr/local/bin/essentia-tagger /usr/local/bin/file-transfer
 
 # 4. Verify the update
 filemanager
@@ -342,12 +345,13 @@ wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/file-sort -O file-sort
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/video-player -O video-player
 wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/essentia-tagger -O essentia-tagger
+wget https://raw.githubusercontent.com/WB2024/WBs-Beautiful-TUI-Filemanager/main/file-transfer -O file-transfer
 
 # 2. Make them executable
-chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger
+chmod +x filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger file-transfer
 
 # 3. Replace old versions in system path
-sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger /usr/local/bin/
+sudo mv filemanager extractfile fixperms audio-to-flac extract-and-convert image-convert iso2god file-sort video-player essentia-tagger file-transfer /usr/local/bin/
 
 # 4. Verify the update
 filemanager
@@ -592,6 +596,60 @@ brew install notcurses
 **Requirements:**
 - For buddy: Python 3.9+, terminal with 24-bit true color support
 - For ncplayer: Just the notcurses package
+
+### 11. `file-transfer` - Dual-Pane File Transfer Tool
+A standalone curses-based dual-pane file browser for transferring files between two directories side-by-side.
+
+**Features:**
+- **Dual-pane layout** - Left and right panels, each browsing its own directory independently
+- **Tab key** switches active pane instantly
+- **Copy** (`c`) - Copy selected items to the opposite pane's directory
+- **Move** (`m`) - Move selected items to the opposite pane's directory
+- **Delete** (`d`) - Delete selected items with confirmation prompt
+- **Rename** (`r`) - Rename item under cursor with inline text input
+- **Create directory** (`n`) - Make a new folder in the active pane
+- **Set path** (`p`) - Type a path directly (supports `~` expansion)
+- **Sync panes** (`=`) - Copy active pane's path to the other pane
+- **Swap panes** (`w`) - Swap left and right pane contents
+- **Multi-select** - `Space` toggles individual items, `a` selects/deselects all
+- **Sort modes** (`s`) - Cycle through name, size, date, and type sorting
+- **Toggle hidden files** (`.` or `h`)
+- **File info** (`i`) - Show detailed info including permissions, ownership, total size
+- **Collision handling** - Automatically renames conflicting files on copy/move
+- **Color-coded entries** - Directories, archives, media, executables highlighted
+
+**Usage examples:**
+```bash
+file-transfer                          # Left pane = CWD, right pane = home
+file-transfer /path/to/source          # Left pane = given path, right = home
+file-transfer /path/source /path/dest  # Set both panes explicitly
+```
+
+**Keyboard shortcuts:**
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Switch active pane |
+| `↑`/`↓` or `j`/`k` | Move cursor |
+| `Enter` | Enter directory |
+| `Backspace` | Go to parent directory |
+| `Space` | Toggle select item |
+| `a` | Select / deselect all |
+| `c` | Copy to other pane |
+| `m` | Move to other pane |
+| `d` | Delete selected |
+| `r` | Rename item |
+| `n` | New directory |
+| `p` | Set pane path |
+| `=` | Sync other pane to this path |
+| `w` | Swap panes |
+| `s` | Cycle sort mode |
+| `.` / `h` | Toggle hidden files |
+| `i` | File info |
+| `F5` / `f` | Refresh |
+| `q` | Quit |
+
+**No external dependencies required.**
 
 ### 10. `essentia-tagger` - ML-Powered Audio Genre/Mood Tagger
 A standalone utility for analyzing audio files with Essentia ML models and writing genre/mood tags to file metadata. Based on [Essentia-to-Metadata](https://github.com/WB2024/Essentia-to-Metadata).
