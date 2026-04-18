@@ -12,9 +12,293 @@ import shutil
 import curses
 import json
 import signal
+import time
 from pathlib import Path
 from collections import defaultdict
 import mimetypes
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Theme & Visual Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Nerd Font / Powerline icons (requires a Nerd Font in your terminal)
+ICONS = {
+    # Powerline separators
+    'sep_right':     '',   # \ue0b0
+    'sep_right_thin': '',  # \ue0b1
+    'sep_left':      '',   # \ue0b2
+    'sep_left_thin':  '',  # \ue0b3
+
+    # File type icons (Nerd Font)
+    'folder_closed':  '',  # \uf07b
+    'folder_open':    '',  # \uf07c
+    'folder_parent':  '',  # \uf112
+    'file_default':   '',  # \uf15b
+    'file_text':      '',  # \uf15c
+    'file_code':      '',  # \ue60e  (code file)
+    'file_image':     '',  # \uf1c5
+    'file_audio':     '',  # \uf1c7  (nf-fa-file_audio_o)
+    'file_video':     '󰎁',  # \uf03a1 (nf-md-file_video)
+    'file_archive':   '',  # \uf1c6
+    'file_pdf':       '',  # \uf1c1
+    'file_data':      '',  # \ue60b  (database)
+    'file_config':    '',  # \ue615  (gear)
+    'file_lock':      '',  # \uf023
+    'file_iso':       '󰗮',  # \uf15ee disc
+
+    # Status / UI icons
+    'git':            '',  # \ue702
+    'home':           '',  # \uf015
+    'search':         '',  # \uf002
+    'bookmark':       '',  # \uf02e
+    'clipboard':      '󰅌',  # \uf014c
+    'check':          '',  # \uf00c
+    'cross':          '',  # \uf00d
+    'arrow_right':    '',  # \uf054
+    'arrow_down':     '',  # \uf078
+    'dot':            '',  # \uf444  (circle-small)
+    'dot_filled':     '',  # \uf444
+    'star':           '',  # \uf005
+    'warning':        '',  # \uf071
+    'info':           '',  # \uf05a
+    'lock':           '',  # \uf023
+    'gear':           '',  # \uf013
+    'wrench':         '',  # \uf0ad
+    'trash':          '',  # \uf014
+    'copy':           '',  # \uf0c5
+    'cut':            '',  # \uf0c4
+    'paste':          '',  # \uf0ea
+    'edit':           '',  # \uf044
+    'terminal':       '',  # \uf120
+    'music':          '󰝚',  # \uf0750
+    'video':          '󰕧',  # \uf0567
+    'image':          '󰋩',  # \uf02e9
+    'package':        '',  # \uf466
+    'trophy':         '',  # \uf091
+    'balance':        '󰖐',  # \uf0590
+
+    # Extra aliases
+    'folder':         '',  # alias for folder_closed
+    'list':           '',  # \uf03a
+    'code':           '',  # \ue60e
+    'database':       '',  # \ue60b
+
+    # Scrollbar
+    'scroll_thumb':   '┃',
+    'scroll_track':   '╎',
+
+    # Box drawing (rounded)
+    'box_tl':         '╭',
+    'box_tr':         '╮',
+    'box_bl':         '╰',
+    'box_br':         '╯',
+    'box_h':          '─',
+    'box_v':          '│',
+    'box_t_right':    '├',
+    'box_t_left':     '┤',
+    'box_t_down':     '┬',
+    'box_t_up':       '┴',
+
+    # Double line box drawing
+    'dbox_tl':        '╔',
+    'dbox_tr':        '╗',
+    'dbox_bl':        '╚',
+    'dbox_br':        '╝',
+    'dbox_h':         '═',
+    'dbox_v':         '║',
+    'dbox_t_right':   '╠',
+    'dbox_t_left':    '╣',
+
+    # Progress bar
+    'prog_full':      '━',
+    'prog_empty':     '╌',
+    'prog_head':      '╸',
+
+    # Breadcrumb
+    'breadcrumb_sep': '',  # \ue0b1
+}
+
+
+def _setup_256_colors():
+    """Initialize extended 256-color palette for the theme.
+    Call AFTER curses.start_color() and curses.use_default_colors().
+    Returns True if 256-color mode is available."""
+
+    if curses.COLORS < 256:
+        return False
+
+    # ── Custom color definitions (redefine slots 16+) ──────────────────
+    # Format: curses.init_color(slot, r*1000//255, g*1000//255, b*1000//255)
+
+    def rgb(slot, r, g, b):
+        curses.init_color(slot, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255)
+
+    # Background tones
+    rgb(16, 22, 22, 30)       # bg_dark      - very dark blue-gray
+    rgb(17, 30, 30, 42)       # bg_medium    - panel background
+    rgb(18, 40, 42, 54)       # bg_light     - hover / selection bg
+    rgb(19, 55, 58, 72)       # bg_lighter   - subtle highlight
+
+    # Accent: Teal / Cyan
+    rgb(20, 86, 182, 194)     # accent_primary    - main teal
+    rgb(21, 108, 210, 220)    # accent_bright     - bright teal
+    rgb(22, 58, 142, 152)     # accent_dim        - dimmer teal
+
+    # Accent: Amber / Gold
+    rgb(23, 240, 190, 80)     # gold              - warm gold
+    rgb(24, 255, 210, 110)    # gold_bright       - highlight gold
+    rgb(25, 200, 155, 55)     # gold_dim          - dimmer gold
+
+    # File type colors (softer / more pleasant)
+    rgb(30, 100, 200, 235)    # dir_blue          - directories
+    rgb(31, 130, 220, 130)    # exec_green        - executables/archives
+    rgb(32, 230, 175, 100)    # media_amber       - images
+    rgb(33, 200, 130, 220)    # audio_purple      - audio
+    rgb(34, 230, 100, 110)    # video_rose        - video
+    rgb(35, 195, 200, 210)    # file_gray         - regular files
+    rgb(36, 110, 170, 220)    # code_blue         - code files
+    rgb(37, 170, 210, 150)    # data_green        - data files
+    rgb(38, 220, 140, 160)    # doc_pink          - documents
+
+    # Semantic colors
+    rgb(40, 130, 220, 130)    # success_green
+    rgb(41, 230, 90, 100)     # error_red
+    rgb(42, 240, 200, 90)     # warning_yellow
+    rgb(43, 110, 160, 240)    # info_blue
+    rgb(44, 85, 90, 105)      # muted_gray        - disabled/subtle text
+
+    # Header gradient colors
+    rgb(50, 30, 95, 115)      # header_bg1        - dark teal
+    rgb(51, 40, 115, 135)     # header_bg2        - medium teal
+    rgb(52, 50, 135, 155)     # header_bg3        - bright teal
+
+    # Selection / highlight
+    rgb(55, 45, 80, 120)      # sel_bg            - selection background
+    rgb(56, 80, 60, 25)       # mark_bg           - marked file bg (warm)
+    rgb(57, 240, 245, 250)    # sel_fg            - bright white for selections
+
+    # Scrollbar
+    rgb(60, 86, 182, 194)     # scroll_thumb
+    rgb(61, 45, 48, 60)       # scroll_track
+
+    # Shadow
+    rgb(62, 10, 10, 15)       # shadow_dark
+
+    # Progress bar
+    rgb(63, 86, 182, 194)     # progress_fill
+    rgb(64, 40, 42, 54)       # progress_empty
+
+    # Text editor colors (enhanced)
+    rgb(70, 150, 210, 130)    # syntax_string     - soft green
+    rgb(71, 130, 170, 240)    # syntax_keyword    - soft blue
+    rgb(72, 90, 110, 140)     # syntax_comment    - muted
+    rgb(73, 230, 190, 120)    # syntax_number     - warm
+    rgb(74, 200, 140, 220)    # syntax_special    - purple
+    rgb(75, 230, 100, 110)    # syntax_error      - red
+
+    # ── Color Pairs ────────────────────────────────────────────────────
+    # Pair 1-13: Override original pairs with our palette
+
+    # File type colors (fg on default bg)
+    curses.init_pair(1, 30, -1)     # Directories - soft blue
+    curses.init_pair(2, 31, -1)     # Executables/Archives - green
+    curses.init_pair(3, 32, -1)     # Images - amber
+    curses.init_pair(4, 33, -1)     # Audio - purple
+    curses.init_pair(5, 34, -1)     # Video - rose
+    curses.init_pair(6, 35, -1)     # Regular files - light gray
+    curses.init_pair(7, 57, 55)     # Selection bar - white on blue
+    curses.init_pair(8, 40, -1)     # Success messages - green
+    curses.init_pair(9, 41, -1)     # Error messages - red
+    curses.init_pair(10, 42, -1)    # Warning / marked files - yellow
+    curses.init_pair(11, 43, -1)    # Info text - blue
+    curses.init_pair(12, 24, 56)    # Cursor on marked file - gold on warm bg
+    curses.init_pair(13, 23, 51)    # Tools menu items - gold on teal
+
+    # Extended pairs for new UI elements
+    curses.init_pair(14, 44, -1)        # Muted/subtle text
+    curses.init_pair(15, 20, 50)        # Header gradient 1
+    curses.init_pair(16, 21, 51)        # Header gradient 2
+    curses.init_pair(17, 57, 52)        # Header gradient 3
+    curses.init_pair(18, 23, -1)        # Gold accent on default bg
+    curses.init_pair(19, 20, -1)        # Teal accent on default bg
+
+    # Footer / status bar
+    curses.init_pair(30, 35, 17)        # Footer bg
+    curses.init_pair(31, 20, 17)        # Footer accent
+    curses.init_pair(32, 23, 17)        # Footer gold
+    curses.init_pair(33, 40, 17)        # Footer success
+    curses.init_pair(34, 41, 17)        # Footer error
+
+    # Popup / dialog
+    curses.init_pair(40, 57, 18)        # Popup body - white on dark
+    curses.init_pair(41, 21, 18)        # Popup accent - teal on dark
+    curses.init_pair(42, 23, 18)        # Popup gold
+    curses.init_pair(43, 20, 18)        # Popup border
+    curses.init_pair(44, 62, 62)        # Shadow
+
+    # Popup highlight (selected item)
+    curses.init_pair(45, 57, 55)        # Popup selected - white on blue
+    curses.init_pair(46, 24, 55)        # Popup selected gold
+
+    # Scrollbar
+    curses.init_pair(50, 60, -1)        # Scroll thumb
+    curses.init_pair(51, 61, -1)        # Scroll track
+
+    # Progress bar
+    curses.init_pair(55, 63, -1)        # Progress filled
+    curses.init_pair(56, 64, -1)        # Progress empty
+    curses.init_pair(57, 57, 55)        # Progress text
+
+    # Breadcrumb path
+    curses.init_pair(60, 20, -1)        # Breadcrumb separator
+    curses.init_pair(61, 35, -1)        # Breadcrumb segment
+    curses.init_pair(62, 21, -1)        # Breadcrumb current (bright)
+
+    # File entry extras
+    curses.init_pair(65, 44, -1)        # Permissions text (muted)
+    curses.init_pair(66, 44, -1)        # Size text (muted)
+    curses.init_pair(67, 36, -1)        # Code files - blue
+    curses.init_pair(68, 37, -1)        # Data files - green
+    curses.init_pair(69, 38, -1)        # Document files - pink
+
+    # Inspector quality colors
+    curses.init_pair(80, 40, -1)        # Quality: Exceptional (green)
+    curses.init_pair(81, 31, -1)        # Quality: Excellent
+    curses.init_pair(82, 43, -1)        # Quality: Good (blue)
+    curses.init_pair(83, 42, -1)        # Quality: Fair (yellow)
+    curses.init_pair(84, 41, -1)        # Quality: Poor (red)
+
+    # Text editor syntax (override pairs 20-26)
+    curses.init_pair(20, 70, -1)        # Strings - green
+    curses.init_pair(21, 71, -1)        # Keywords - blue
+    curses.init_pair(22, 72, -1)        # Comments - muted
+    curses.init_pair(23, 73, -1)        # Numbers - warm
+    curses.init_pair(24, 74, -1)        # Special - purple
+    curses.init_pair(25, 75, -1)        # Errors - red
+    curses.init_pair(26, 35, -1)        # Normal text
+
+    # Column header
+    curses.init_pair(90, 20, 17)        # Column header text
+
+    return True
+
+
+def _setup_basic_colors():
+    """Fallback 8-color setup (same as original)."""
+    curses.init_pair(1, curses.COLOR_CYAN, -1)
+    curses.init_pair(2, curses.COLOR_GREEN, -1)
+    curses.init_pair(3, curses.COLOR_YELLOW, -1)
+    curses.init_pair(4, curses.COLOR_MAGENTA, -1)
+    curses.init_pair(5, curses.COLOR_RED, -1)
+    curses.init_pair(6, curses.COLOR_WHITE, -1)
+    curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
+    curses.init_pair(8, curses.COLOR_GREEN, -1)
+    curses.init_pair(9, curses.COLOR_RED, -1)
+    curses.init_pair(10, curses.COLOR_YELLOW, -1)
+    curses.init_pair(11, curses.COLOR_BLUE, -1)
+    curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+    curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
 
 # Configuration file for bookmarks
 CONFIG_FILE = Path.home() / '.filemanager_config.json'
@@ -96,19 +380,11 @@ class FileManager:
         # Initialize colors
         curses.start_color()
         curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_CYAN, -1)      # Directories
-        curses.init_pair(2, curses.COLOR_GREEN, -1)     # Executables/Archives
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)    # Media files
-        curses.init_pair(4, curses.COLOR_MAGENTA, -1)   # Audio files
-        curses.init_pair(5, curses.COLOR_RED, -1)       # Video files
-        curses.init_pair(6, curses.COLOR_WHITE, -1)     # Regular files
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)  # Selection
-        curses.init_pair(8, curses.COLOR_GREEN, -1)     # Success messages
-        curses.init_pair(9, curses.COLOR_RED, -1)       # Error messages
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)   # Warning messages
-        curses.init_pair(11, curses.COLOR_BLUE, -1)     # Info
-        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)  # Marked/Selected files
-        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)   # Menu items (high contrast)
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
+        if self.has_256_colors:
+            _setup_256_colors()
+        else:
+            _setup_basic_colors()
         
         # Hide cursor
         curses.curs_set(0)
@@ -173,7 +449,7 @@ class FileManager:
     def get_file_color(self, entry):
         """Get color pair for file type"""
         if entry['is_dir']:
-            return curses.color_pair(1)  # Cyan for directories
+            return curses.color_pair(1)  # Cyan/blue for directories
         
         path = entry['path']
         ext = path.suffix.lower()
@@ -184,38 +460,66 @@ class FileManager:
         
         # Audio
         if ext in {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma'}:
-            return curses.color_pair(4)  # Magenta
+            return curses.color_pair(4)  # Purple
         
         # Video
         if ext in {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'}:
-            return curses.color_pair(5)  # Red
+            return curses.color_pair(5)  # Rose
         
         # Images
         if ext in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp'}:
-            return curses.color_pair(3)  # Yellow
+            return curses.color_pair(3)  # Amber
         
-        return curses.color_pair(6)  # White for regular files
+        # Code files
+        if ext in {'.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.c', '.cpp', '.h',
+                   '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.sh', '.bash',
+                   '.html', '.css', '.scss', '.lua', '.vim', '.el'}:
+            return curses.color_pair(67) if self.has_256_colors else curses.color_pair(11)
+        
+        # Data files
+        if ext in {'.json', '.xml', '.yaml', '.yml', '.csv', '.sql', '.db', '.sqlite', '.toml'}:
+            return curses.color_pair(68) if self.has_256_colors else curses.color_pair(2)
+        
+        # Documents
+        if ext in {'.txt', '.log', '.md', '.doc', '.docx', '.pdf', '.rtf'}:
+            return curses.color_pair(69) if self.has_256_colors else curses.color_pair(6)
+        
+        return curses.color_pair(6)  # Default for regular files
     
     def get_file_icon(self, entry):
-        """Get icon for file type"""
+        """Get Nerd Font icon for file type"""
         if entry['is_dir']:
-            return "📁"
+            if entry['name'] == '..':
+                return ICONS['folder_parent']
+            return ICONS['folder_closed']
         
         path = entry['path']
         ext = path.suffix.lower()
         
         if ext in {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz', '.txz', '.rar', '.7z'}:
-            return "📦"
+            return ICONS['file_archive']
         if ext in {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma'}:
-            return "🎵"
+            return ICONS['file_audio']
         if ext in {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'}:
-            return "🎬"
+            return ICONS['file_video']
         if ext in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp'}:
-            return "🖼️"
+            return ICONS['file_image']
+        if ext in {'.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.c', '.cpp', '.h',
+                   '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.sh', '.bash',
+                   '.html', '.css', '.scss', '.lua', '.vim', '.el'}:
+            return ICONS['file_code']
+        if ext in {'.json', '.xml', '.yaml', '.yml', '.csv', '.sql', '.db', '.sqlite', '.toml'}:
+            return ICONS['file_data']
         if ext in {'.txt', '.log', '.md'}:
-            return "📝"
+            return ICONS['file_text']
+        if ext in {'.pdf'}:
+            return ICONS['file_pdf']
+        if ext in {'.iso'}:
+            return ICONS['file_iso']
+        if ext in {'.conf', '.cfg', '.ini', '.env'}:
+            return ICONS['file_config']
         
-        return "📄"
+        return ICONS['file_default']
     
     def analyze_directory_contents(self, path):
         """Analyze directory contents - count files by type and get total size"""
@@ -331,69 +635,178 @@ class FileManager:
             self.selected_index = max(0, len(self.entries) - 1)
     
     def draw_header(self):
-        """Draw header with current path"""
+        """Draw header with gradient title bar and breadcrumb path"""
         height, width = self.stdscr.getmaxyx()
         
-        # Title bar
-        title = " 🗂️  INTERACTIVE FILE MANAGER 🗂️ "
-        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-        self.stdscr.addstr(0, 0, title.center(width)[:width])
-        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
-        
-        # Current path
-        path_str = f"📁 {self.current_dir}"
-        if len(path_str) > width - 2:
-            path_str = "📁 ..." + path_str[-(width-6):]
-        self.stdscr.addstr(1, 1, path_str[:width-2], curses.color_pair(11) | curses.A_BOLD)
-        
-        # Separator
-        self.stdscr.addstr(2, 0, "─" * width)
+        if self.has_256_colors:
+            # ── Gradient title bar ──────────────────────────────────────
+            title_text = f"  {ICONS['folder_open']}  FILE MANAGER  "
+            
+            # Row 0: Main title with gradient background
+            self.stdscr.attron(curses.color_pair(15) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, " " * width)
+            self.stdscr.attroff(curses.color_pair(15) | curses.A_BOLD)
+            
+            # Center the title
+            title_x = (width - len(title_text)) // 2
+            if title_x > 0:
+                self.stdscr.addstr(0, title_x, title_text, curses.color_pair(17) | curses.A_BOLD)
+            
+            # ── Breadcrumb path bar (row 1) ────────────────────────────
+            # Build breadcrumb from path parts
+            parts = self.current_dir.parts
+            breadcrumb = f" {ICONS['home']} "
+            
+            for i, part in enumerate(parts):
+                if part == '/':
+                    continue
+                if i > 0:
+                    breadcrumb += f" {ICONS['breadcrumb_sep']} "
+                breadcrumb += part
+            
+            if len(breadcrumb) > width - 4:
+                # Truncate from the left, keeping the last segments
+                breadcrumb = f" {ICONS['home']} … {ICONS['breadcrumb_sep']} " + str(self.current_dir.name)
+            
+            # File count indicator on the right
+            file_count = len(self.entries)
+            dir_count = sum(1 for e in self.entries if e['is_dir'] and e['name'] != '..')
+            regular_count = file_count - dir_count - (1 if self.entries and self.entries[0]['name'] == '..' else 0)
+            count_str = f" {ICONS['folder_closed']} {dir_count}  {ICONS['file_default']} {regular_count} "
+            
+            # Path on left, counts on right
+            avail = width - len(count_str) - 1
+            self.stdscr.addstr(1, 0, " " * width, curses.color_pair(14))
+            self.stdscr.addstr(1, 1, breadcrumb[:avail], curses.color_pair(19) | curses.A_BOLD)
+            self.stdscr.addstr(1, width - len(count_str) - 1, count_str, curses.color_pair(14))
+            
+            # ── Column headers (row 2) ─────────────────────────────────
+            col_header = f"  {'NAME':<{width - 32}}{'PERMS':<14}{'SIZE':>8}  "
+            self.stdscr.addstr(2, 0, col_header[:width], curses.color_pair(90))
+        else:
+            # Fallback for basic terminals
+            title = f" {ICONS['folder_open']}  FILE MANAGER "
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            
+            path_str = f" {ICONS['home']} {self.current_dir}"
+            if len(path_str) > width - 2:
+                path_str = f" {ICONS['home']} …" + str(self.current_dir)[-(width-8):]
+            self.stdscr.addstr(1, 1, path_str[:width-2], curses.color_pair(11) | curses.A_BOLD)
+            
+            self.stdscr.addstr(2, 0, "─" * width)
     
     def draw_footer(self):
-        """Draw footer with help"""
+        """Draw footer with status bar and help"""
         height, width = self.stdscr.getmaxyx()
         
-        # Separator
-        self.stdscr.addstr(height - 5, 0, "─" * width)
-        
-        # Selection status
-        if self.selected_files:
-            sel_count = len(self.selected_files)
-            sel_info = f" {sel_count} file(s) marked "
-            self.stdscr.addstr(height - 5, width - len(sel_info) - 2, sel_info, curses.color_pair(10) | curses.A_BOLD)
-        
-        # Clipboard status
-        if self.clipboard:
-            clip_count = len(self.clipboard)
-            clip_op = "copy" if self.clipboard_operation == 'copy' else "cut"
-            clip_info = f" Clipboard: {clip_count} ({clip_op}) "
-            self.stdscr.addstr(height - 5, 2, clip_info, curses.color_pair(11))
-        
-        # Help text
-        if self.show_help:
-            help_lines = [
-                "↑/↓: Navigate  Enter: Open  Backspace: Up  h: Home  r: Root  ?: Help",
-                "Space: Mark  a: Mark All  u: Unmark  o: Operations  t: Tools",
-                "c: Copy  x: Cut  v: Paste  d: Delete  n: New  R: Rename  q: Quit",
-                "V: Play Video  I: View Image  b: Bookmarks"
-            ]
+        if self.has_256_colors:
+            # ── Status separator (thin line) ───────────────────────────
+            sep_line = ICONS['box_h'] * width
+            try:
+                self.stdscr.addstr(height - 5, 0, sep_line[:width], curses.color_pair(14))
+            except curses.error:
+                pass
+            
+            # ── Status indicators row ──────────────────────────────────
+            status_parts = []
+            
+            # Selection status
+            if self.selected_files:
+                sel_count = len(self.selected_files)
+                status_parts.append((f" {ICONS['check']} {sel_count} marked ", curses.color_pair(18) | curses.A_BOLD))
+            
+            # Clipboard status
+            if self.clipboard:
+                clip_count = len(self.clipboard)
+                op_icon = ICONS['copy'] if self.clipboard_operation == 'copy' else ICONS['cut']
+                clip_op = "copied" if self.clipboard_operation == 'copy' else "cut"
+                status_parts.append((f" {op_icon} {clip_count} {clip_op} ", curses.color_pair(19)))
+            
+            # Draw status parts
+            x_pos = 1
+            for text, attr in status_parts:
+                try:
+                    self.stdscr.addstr(height - 4, x_pos, text[:width - x_pos - 1], attr)
+                    x_pos += len(text) + 1
+                except curses.error:
+                    pass
+            
+            # ── Help text row(s) ───────────────────────────────────────
+            if self.show_help:
+                help_lines = [
+                    f" ↑↓ Navigate  ⏎ Open  ⌫ Up  h Home  r Root  ? Help",
+                    f" ␣ Mark  a All  u Unmark  o Ops  t Tools  b Bookmarks",
+                    f" c Copy  x Cut  v Paste  d Del  n New  R Rename  q Quit",
+                ]
+                for i, line in enumerate(help_lines):
+                    row = height - 3 + i
+                    if row < height - 1:
+                        try:
+                            self.stdscr.addstr(row, 0, " " * width, curses.color_pair(14))
+                            self.stdscr.addstr(row, 0, line[:width-1], curses.color_pair(14))
+                        except curses.error:
+                            pass
+            else:
+                help_line = f" ? Help  ␣ Mark  o Ops  t Tools  V Video  I Image  d Del  q Quit"
+                try:
+                    self.stdscr.addstr(height - 3, 0, " " * width, curses.color_pair(14))
+                    self.stdscr.addstr(height - 3, 0, help_line[:width-1], curses.color_pair(14))
+                except curses.error:
+                    pass
+            
+            # ── Message row ────────────────────────────────────────────
+            if self.message:
+                if self.message_color == curses.COLOR_GREEN:
+                    icon, color = ICONS['check'], curses.color_pair(8)
+                elif self.message_color == curses.COLOR_RED:
+                    icon, color = ICONS['cross'], curses.color_pair(9)
+                else:
+                    icon, color = ICONS['warning'], curses.color_pair(10)
+                msg = f" {icon} {self.message}"
+                try:
+                    self.stdscr.addstr(height - 1, 0, msg[:width-1], color | curses.A_BOLD)
+                except curses.error:
+                    pass
         else:
-            help_lines = [
-                "?: Help  Space: Mark  o: Ops  t: Tools  V: Video  I: Image  d: Del"
-            ]
-        
-        for i, line in enumerate(help_lines):
-            if height - 4 + i < height:
-                self.stdscr.addstr(height - 4 + i, 1, line[:width-2], curses.color_pair(11))
-        
-        # Message
-        if self.message:
-            color = curses.color_pair(8) if self.message_color == curses.COLOR_GREEN else curses.color_pair(9)
-            msg = self.message[:width-2]
-            self.stdscr.addstr(height - 1, 1, msg, color | curses.A_BOLD)
+            # ── Fallback basic footer ──────────────────────────────────
+            self.stdscr.addstr(height - 5, 0, "─" * width)
+            
+            if self.selected_files:
+                sel_count = len(self.selected_files)
+                sel_info = f" {sel_count} file(s) marked "
+                self.stdscr.addstr(height - 5, width - len(sel_info) - 2, sel_info, curses.color_pair(10) | curses.A_BOLD)
+            
+            if self.clipboard:
+                clip_count = len(self.clipboard)
+                clip_op = "copy" if self.clipboard_operation == 'copy' else "cut"
+                clip_info = f" Clipboard: {clip_count} ({clip_op}) "
+                self.stdscr.addstr(height - 5, 2, clip_info, curses.color_pair(11))
+            
+            if self.show_help:
+                help_lines = [
+                    "↑/↓: Navigate  Enter: Open  Backspace: Up  h: Home  r: Root  ?: Help",
+                    "Space: Mark  a: Mark All  u: Unmark  o: Operations  t: Tools",
+                    "c: Copy  x: Cut  v: Paste  d: Delete  n: New  R: Rename  q: Quit",
+                    "V: Play Video  I: View Image  b: Bookmarks"
+                ]
+            else:
+                help_lines = [
+                    "?: Help  Space: Mark  o: Ops  t: Tools  V: Video  I: Image  d: Del"
+                ]
+            
+            for i, line in enumerate(help_lines):
+                if height - 4 + i < height:
+                    self.stdscr.addstr(height - 4 + i, 1, line[:width-2], curses.color_pair(11))
+            
+            if self.message:
+                color = curses.color_pair(8) if self.message_color == curses.COLOR_GREEN else curses.color_pair(9)
+                msg = self.message[:width-2]
+                self.stdscr.addstr(height - 1, 1, msg, color | curses.A_BOLD)
     
     def draw_entries(self):
-        """Draw file/directory entries"""
+        """Draw file/directory entries with refined layout"""
         height, width = self.stdscr.getmaxyx()
         
         # Calculate visible area
@@ -425,57 +838,78 @@ class FileManager:
             icon = self.get_file_icon(entry)
             name = entry['name']
             
-            # Selection marker
-            marker = "[*]" if is_marked else "[ ]"
+            # Selection marker with nice icons
+            if is_marked:
+                marker = f" {ICONS['check']} "
+            else:
+                marker = "   "
             
             # Size string
             if entry['is_dir']:
-                size_str = "    <DIR>"
+                size_str = "     <DIR>"
             else:
                 size_str = self.get_size_string(entry['size'])
             
             # Permissions
             perms = entry['perms']
             
-            # Calculate available width for name
-            prefix = f"{marker} {icon} "
-            suffix = f" {perms} {size_str}"
-            available_width = width - len(prefix) - len(suffix) - 4
+            # Calculate available width for name (reserve space for scrollbar)
+            scrollbar_space = 2 if len(self.entries) > visible_count else 0
+            prefix = f"{marker} {icon}  "
+            suffix = f"  {perms}  {size_str}"
+            available_width = width - len(prefix) - len(suffix) - 2 - scrollbar_space
+            
+            if available_width < 10:
+                available_width = 10
             
             if len(name) > available_width:
-                name = name[:available_width-3] + "..."
+                name = name[:available_width-1] + "…"
             
             display = f"{prefix}{name:<{available_width}}{suffix}"
             
-            # Draw with appropriate color - marked files get special treatment
-            if is_cursor and is_marked:
-                # Cursor on marked file
-                self.stdscr.attron(curses.color_pair(12) | curses.A_BOLD)
-                self.stdscr.addstr(y_pos, 1, display[:width-2])
-                self.stdscr.attroff(curses.color_pair(12) | curses.A_BOLD)
-            elif is_cursor:
-                # Cursor on unmarked file
-                self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-                self.stdscr.addstr(y_pos, 1, display[:width-2])
-                self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
-            elif is_marked:
-                # Marked file without cursor
-                self.stdscr.addstr(y_pos, 1, display[:width-2], curses.color_pair(10) | curses.A_BOLD)
-            else:
-                color = self.get_file_color(entry)
-                self.stdscr.addstr(y_pos, 1, display[:width-2], color)
+            # Determine colors and draw
+            try:
+                if is_cursor and is_marked:
+                    # Cursor on marked file - gold on warm highlight
+                    self.stdscr.addstr(y_pos, 0, " " * (width - scrollbar_space), curses.color_pair(12))
+                    self.stdscr.addstr(y_pos, 0, display[:width - scrollbar_space], curses.color_pair(12) | curses.A_BOLD)
+                elif is_cursor:
+                    # Cursor on unmarked file - full-width highlight
+                    self.stdscr.addstr(y_pos, 0, " " * (width - scrollbar_space), curses.color_pair(7))
+                    self.stdscr.addstr(y_pos, 0, display[:width - scrollbar_space], curses.color_pair(7) | curses.A_BOLD)
+                elif is_marked:
+                    # Marked file without cursor - subtle yellow highlight
+                    self.stdscr.addstr(y_pos, 1, display[:width-2-scrollbar_space], curses.color_pair(10) | curses.A_BOLD)
+                else:
+                    # Normal entry - icon gets file color, perms/size get muted color
+                    color = self.get_file_color(entry)
+                    self.stdscr.addstr(y_pos, 0, display[:width-scrollbar_space], color)
+                    
+                    # Overlay muted permissions and size if 256-color mode
+                    if self.has_256_colors and len(display) > len(prefix) + available_width:
+                        suffix_start = len(prefix) + available_width
+                        try:
+                            self.stdscr.addstr(y_pos, suffix_start, suffix[:width - suffix_start - scrollbar_space], curses.color_pair(65))
+                        except curses.error:
+                            pass
+            except curses.error:
+                pass
         
-        # Draw scrollbar if needed
+        # ── Enhanced scrollbar ─────────────────────────────────────────
         if len(self.entries) > visible_count:
-            scrollbar_height = visible_count
-            scrollbar_pos = int((self.scroll_offset / len(self.entries)) * scrollbar_height)
+            # Calculate proportional thumb
+            thumb_size = max(1, int(visible_count * visible_count / len(self.entries)))
+            thumb_pos = int((self.scroll_offset / max(1, len(self.entries) - visible_count)) * (visible_count - thumb_size))
             
             for i in range(visible_count):
                 y_pos = visible_start + i
-                if i == scrollbar_pos:
-                    self.stdscr.addstr(y_pos, width - 1, "█", curses.color_pair(11))
-                else:
-                    self.stdscr.addstr(y_pos, width - 1, "│", curses.color_pair(11))
+                try:
+                    if thumb_pos <= i < thumb_pos + thumb_size:
+                        self.stdscr.addstr(y_pos, width - 1, ICONS['scroll_thumb'], curses.color_pair(50) | curses.A_BOLD)
+                    else:
+                        self.stdscr.addstr(y_pos, width - 1, ICONS['scroll_track'], curses.color_pair(51))
+                except curses.error:
+                    pass
     
     def draw(self):
         """Draw the entire interface"""
@@ -618,16 +1052,16 @@ class FileManager:
         bookmarks = self.config.get_bookmarks()
         
         menu_items = []
-        menu_items.append("Add current directory as bookmark")
+        menu_items.append(f"{ICONS['bookmark']}  Add current directory as bookmark")
         
         if bookmarks:
             menu_items.append("─" * 40)
             for name, path in bookmarks.items():
-                menu_items.append(f"{name}: {path}")
+                menu_items.append(f"{ICONS['folder_closed']}  {name}: {path}")
             menu_items.append("─" * 40)
-            menu_items.append("Remove a bookmark")
+            menu_items.append(f"{ICONS['trash']}  Remove a bookmark")
         
-        menu_items.append("Cancel")
+        menu_items.append(f"{ICONS['cross']}  Cancel")
         
         selected = 0
         
@@ -636,13 +1070,21 @@ class FileManager:
             height, width = self.stdscr.getmaxyx()
             
             # Title
-            title = " BOOKMARKS "
-            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-            self.stdscr.addstr(0, 0, title.center(width)[:width])
-            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+            if self.has_256_colors:
+                title = f"  {ICONS['bookmark']}  BOOKMARKS  "
+                self.stdscr.addstr(0, 0, " " * width, curses.color_pair(15))
+                title_x = (width - len(title)) // 2
+                self.stdscr.addstr(0, title_x, title, curses.color_pair(17) | curses.A_BOLD)
+            else:
+                title = " BOOKMARKS "
+                self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+                self.stdscr.addstr(0, 0, title.center(width)[:width])
+                self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
             
-            self.stdscr.addstr(2, 2, "Use ↑/↓ to navigate, Enter to select", curses.color_pair(11))
-            self.stdscr.addstr(3, 0, "─" * width)
+            hint_color = curses.color_pair(14) if self.has_256_colors else curses.color_pair(11)
+            self.stdscr.addstr(2, 2, "Use ↑/↓ to navigate, Enter to select", hint_color)
+            sep = ICONS['box_h'] * width
+            self.stdscr.addstr(3, 0, sep[:width], curses.color_pair(14) if self.has_256_colors else 0)
             
             # Menu items
             start_y = 4
@@ -651,13 +1093,14 @@ class FileManager:
                     break
                 
                 if item.startswith("─"):
-                    self.stdscr.addstr(i + start_y, 2, item[:width-4])
+                    self.stdscr.addstr(i + start_y, 2, item[:width-4], curses.color_pair(14) if self.has_256_colors else 0)
                 elif i == selected:
                     self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-                    self.stdscr.addstr(i + start_y, 2, f"► {item}"[:width-4])
+                    self.stdscr.addstr(i + start_y, 0, " " * width)
+                    self.stdscr.addstr(i + start_y, 2, f"{ICONS['arrow_right']} {item}"[:width-4])
                     self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
                 else:
-                    self.stdscr.addstr(i + start_y, 2, f"  {item}"[:width-4])
+                    self.stdscr.addstr(i + start_y, 2, f"  {item}"[:width-4], curses.color_pair(19) if self.has_256_colors else 0)
             
             self.stdscr.refresh()
             
@@ -726,32 +1169,79 @@ class FileManager:
         return input_str.strip()
     
     def show_message_box(self, title, lines, wait_for_key=True):
-        """Show a message box"""
+        """Show a styled message box overlay"""
         height, width = self.stdscr.getmaxyx()
         
-        box_height = len(lines) + 4
-        box_width = min(width - 4, max(len(title) + 4, max(len(line) for line in lines) + 4))
+        box_height = len(lines) + 6
+        box_width = min(width - 4, max(len(title) + 6, max(len(line) for line in lines) + 6))
         
         start_y = (height - box_height) // 2
         start_x = (width - box_width) // 2
         
-        # Draw box
-        self.stdscr.attron(curses.color_pair(7))
-        for i in range(box_height):
-            self.stdscr.addstr(start_y + i, start_x, " " * box_width)
-        self.stdscr.attroff(curses.color_pair(7))
+        popup_body = curses.color_pair(40) if self.has_256_colors else curses.color_pair(7)
+        popup_border = curses.color_pair(43) if self.has_256_colors else curses.color_pair(7)
+        popup_title = curses.color_pair(41) if self.has_256_colors else curses.color_pair(7)
+        shadow_color = curses.color_pair(44) if self.has_256_colors else 0
+        
+        # Shadow
+        if self.has_256_colors:
+            for dy in range(box_height):
+                try:
+                    self.stdscr.addstr(start_y + dy + 1, start_x + 2, " " * box_width, shadow_color)
+                except curses.error:
+                    pass
+        
+        # Background
+        for dy in range(box_height):
+            try:
+                self.stdscr.addstr(start_y + dy, start_x, " " * box_width, popup_body)
+            except curses.error:
+                pass
+        
+        # Border
+        top = ICONS['box_tl'] + ICONS['box_h'] * (box_width - 2) + ICONS['box_tr']
+        bot = ICONS['box_bl'] + ICONS['box_h'] * (box_width - 2) + ICONS['box_br']
+        try:
+            self.stdscr.addstr(start_y, start_x, top, popup_border)
+            self.stdscr.addstr(start_y + box_height - 1, start_x, bot, popup_border)
+        except curses.error:
+            pass
+        for dy in range(1, box_height - 1):
+            try:
+                self.stdscr.addstr(start_y + dy, start_x, ICONS['box_v'], popup_border)
+                self.stdscr.addstr(start_y + dy, start_x + box_width - 1, ICONS['box_v'], popup_border)
+            except curses.error:
+                pass
         
         # Title
-        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-        self.stdscr.addstr(start_y, start_x + (box_width - len(title)) // 2, title)
-        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        title_text = f" {ICONS['info']}  {title} "
+        title_pad = (box_width - 2 - len(title_text)) // 2
+        try:
+            self.stdscr.addstr(start_y + 1, start_x + 1 + max(0, title_pad), title_text[:box_width-4], popup_title | curses.A_BOLD)
+        except curses.error:
+            pass
         
-        # Lines
+        # Separator
+        sep = ICONS['box_t_right'] + ICONS['box_h'] * (box_width - 2) + ICONS['box_t_left']
+        try:
+            self.stdscr.addstr(start_y + 2, start_x, sep, popup_border)
+        except curses.error:
+            pass
+        
+        # Content lines
         for i, line in enumerate(lines):
-            self.stdscr.addstr(start_y + 2 + i, start_x + 2, line[:box_width-4])
+            try:
+                self.stdscr.addstr(start_y + 3 + i, start_x + 3, line[:box_width-6], popup_body)
+            except curses.error:
+                pass
         
         if wait_for_key:
-            self.stdscr.addstr(start_y + box_height - 1, start_x + 2, "Press any key to continue...", curses.A_BOLD)
+            prompt = "Press any key to continue…"
+            try:
+                self.stdscr.addstr(start_y + box_height - 2, start_x + 3, prompt,
+                                   curses.color_pair(14) if self.has_256_colors else curses.A_BOLD)
+            except curses.error:
+                pass
         
         self.stdscr.refresh()
         
@@ -759,64 +1249,123 @@ class FileManager:
             self.stdscr.getch()
     
     def show_progress(self, title, current_item, item_num, total_items, bytes_done=0, bytes_total=0):
-        """Display a progress indicator for file operations"""
+        """Display a beautiful progress indicator for file operations"""
         height, width = self.stdscr.getmaxyx()
         
         # Calculate box dimensions
         box_width = min(width - 4, 70)
-        box_height = 9 if bytes_total > 0 else 7
+        box_height = 11 if bytes_total > 0 else 9
         
         start_y = (height - box_height) // 2
         start_x = (width - box_width) // 2
         
-        # Draw box background
-        self.stdscr.attron(curses.color_pair(7))
-        for i in range(box_height):
-            self.stdscr.addstr(start_y + i, start_x, " " * box_width)
-        self.stdscr.attroff(curses.color_pair(7))
+        popup_body = curses.color_pair(40) if self.has_256_colors else curses.color_pair(7)
+        popup_border = curses.color_pair(43) if self.has_256_colors else curses.color_pair(7)
+        popup_accent = curses.color_pair(41) if self.has_256_colors else curses.color_pair(7)
+        prog_fill = curses.color_pair(55) if self.has_256_colors else curses.color_pair(7)
+        prog_empty = curses.color_pair(56) if self.has_256_colors else curses.color_pair(7)
+        prog_text = curses.color_pair(57) if self.has_256_colors else curses.color_pair(7)
+        shadow_color = curses.color_pair(44) if self.has_256_colors else 0
+        
+        # Shadow
+        if self.has_256_colors:
+            for dy in range(box_height):
+                try:
+                    self.stdscr.addstr(start_y + dy + 1, start_x + 2, " " * box_width, shadow_color)
+                except curses.error:
+                    pass
+        
+        # Background
+        for dy in range(box_height):
+            try:
+                self.stdscr.addstr(start_y + dy, start_x, " " * box_width, popup_body)
+            except curses.error:
+                pass
+        
+        # Border
+        top = ICONS['box_tl'] + ICONS['box_h'] * (box_width - 2) + ICONS['box_tr']
+        bot = ICONS['box_bl'] + ICONS['box_h'] * (box_width - 2) + ICONS['box_br']
+        self.stdscr.addstr(start_y, start_x, top, popup_border)
+        self.stdscr.addstr(start_y + box_height - 1, start_x, bot, popup_border)
+        for dy in range(1, box_height - 1):
+            try:
+                self.stdscr.addstr(start_y + dy, start_x, ICONS['box_v'], popup_border)
+                self.stdscr.addstr(start_y + dy, start_x + box_width - 1, ICONS['box_v'], popup_border)
+            except curses.error:
+                pass
         
         # Title
-        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-        self.stdscr.addstr(start_y, start_x + (box_width - len(title)) // 2, title)
-        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        title_text = f" {ICONS['gear']}  {title} "
+        title_pad = (box_width - 2 - len(title_text)) // 2
+        try:
+            self.stdscr.addstr(start_y + 1, start_x + 1 + title_pad, title_text, popup_accent | curses.A_BOLD)
+        except curses.error:
+            pass
         
-        # Item progress
+        # Item progress text
         progress_text = f"Item {item_num} of {total_items}"
-        self.stdscr.addstr(start_y + 2, start_x + 2, progress_text[:box_width-4], curses.color_pair(7))
+        try:
+            self.stdscr.addstr(start_y + 3, start_x + 3, progress_text[:box_width-6], popup_body)
+        except curses.error:
+            pass
         
-        # Current item name (truncate if necessary)
-        max_name_len = box_width - 6
+        # Current item name
+        max_name_len = box_width - 8
         if len(current_item) > max_name_len:
-            display_name = "..." + current_item[-(max_name_len-3):]
+            display_name = "…" + current_item[-(max_name_len-1):]
         else:
             display_name = current_item
-        self.stdscr.addstr(start_y + 3, start_x + 2, display_name[:box_width-4], curses.color_pair(7))
+        try:
+            self.stdscr.addstr(start_y + 4, start_x + 3, display_name[:box_width-6], popup_body)
+        except curses.error:
+            pass
         
-        # Item progress bar
-        bar_width = box_width - 8
+        # Item progress bar with gradient
+        bar_width = box_width - 10
         if total_items > 0:
             item_progress = item_num / total_items
             filled = int(bar_width * item_progress)
-            bar = "█" * filled + "░" * (bar_width - filled)
+            bar = ICONS['prog_full'] * filled
+            if filled < bar_width:
+                bar += ICONS['prog_head']
+                bar += ICONS['prog_empty'] * (bar_width - filled - 1)
+            else:
+                bar = ICONS['prog_full'] * bar_width
             percent = int(item_progress * 100)
-            self.stdscr.addstr(start_y + 4, start_x + 2, f"[{bar}] {percent:3d}%"[:box_width-4], curses.color_pair(7))
+            try:
+                self.stdscr.addstr(start_y + 6, start_x + 3, bar[:filled+1], prog_fill | curses.A_BOLD)
+                if filled < bar_width:
+                    self.stdscr.addstr(start_y + 6, start_x + 3 + filled + 1, 
+                                      ICONS['prog_empty'] * (bar_width - filled - 1), prog_empty)
+                pct_str = f" {percent:3d}%"
+                self.stdscr.addstr(start_y + 6, start_x + 3 + bar_width + 1, pct_str, popup_accent | curses.A_BOLD)
+            except curses.error:
+                pass
         
         # Bytes progress (for large file copies)
         if bytes_total > 0:
             bytes_progress = bytes_done / bytes_total if bytes_total > 0 else 0
             filled = int(bar_width * bytes_progress)
-            bar = "█" * filled + "░" * (bar_width - filled)
             percent = int(bytes_progress * 100)
             
-            # Size strings
             done_str = self.get_size_string(bytes_done).strip()
             total_str = self.get_size_string(bytes_total).strip()
             
-            self.stdscr.addstr(start_y + 6, start_x + 2, f"File: {done_str} / {total_str}"[:box_width-4], curses.color_pair(7))
-            self.stdscr.addstr(start_y + 7, start_x + 2, f"[{bar}] {percent:3d}%"[:box_width-4], curses.color_pair(7))
+            try:
+                self.stdscr.addstr(start_y + 8, start_x + 3, f"File: {done_str} / {total_str}"[:box_width-6], popup_body)
+                bar = ICONS['prog_full'] * filled
+                if filled < bar_width:
+                    bar += ICONS['prog_head']
+                self.stdscr.addstr(start_y + 9, start_x + 3, bar[:filled+1], prog_fill | curses.A_BOLD)
+                if filled < bar_width:
+                    self.stdscr.addstr(start_y + 9, start_x + 3 + filled + 1,
+                                      ICONS['prog_empty'] * (bar_width - filled - 1), prog_empty)
+                pct_str = f" {percent:3d}%"
+                self.stdscr.addstr(start_y + 9, start_x + 3 + bar_width + 1, pct_str, popup_accent | curses.A_BOLD)
+            except curses.error:
+                pass
         
         self.stdscr.refresh()
-        # Give terminal time to actually display the update
         curses.napms(1)
     
     def copy_file_with_progress(self, src_path, dest_path, item_num, total_items, operation_title):
@@ -954,15 +1503,15 @@ class FileManager:
             
             # Summary
             current_y = 2
-            self.stdscr.addstr(current_y, 2, f"📁 Path: {path}", curses.color_pair(11) | curses.A_BOLD)
+            self.stdscr.addstr(current_y, 2, f"{ICONS["folder"]} Path: {path}", curses.color_pair(11) | curses.A_BOLD)
             current_y += 1
-            self.stdscr.addstr(current_y, 2, f"📊 Total Size: {self.get_size_string(analysis['total_size'])}", curses.color_pair(8))
+            self.stdscr.addstr(current_y, 2, f"{ICONS['database']} Total Size: {self.get_size_string(analysis['total_size'])}", curses.color_pair(8))
             current_y += 1
-            self.stdscr.addstr(current_y, 2, f"📄 Total Files: {analysis['total_files']}", curses.color_pair(8))
+            self.stdscr.addstr(current_y, 2, f"{ICONS["file_default"]} Total Files: {analysis['total_files']}", curses.color_pair(8))
             current_y += 2
             
             # File type breakdown
-            self.stdscr.addstr(current_y, 2, "📋 FILE TYPE BREAKDOWN:", curses.color_pair(11) | curses.A_BOLD)
+            self.stdscr.addstr(current_y, 2, f"{ICONS["list"]} FILE TYPE BREAKDOWN:", curses.color_pair(11) | curses.A_BOLD)
             current_y += 1
             self.stdscr.addstr(current_y, 0, "─" * width)
             current_y += 1
@@ -976,14 +1525,14 @@ class FileManager:
             
             # Icons for file types
             type_icons = {
-                'audio': '🎵',
-                'video': '🎬',
-                'image': '🖼️',
-                'document': '📝',
-                'archive': '📦',
-                'code': '💻',
-                'data': '📊',
-                'other': '📄'
+                'audio': ICONS['music'],
+                'video': ICONS['video'],
+                'image': ICONS['image'],
+                'document': ICONS['edit'],
+                'archive': ICONS['package'],
+                'code': ICONS['code'],
+                'data': ICONS['database'],
+                'other': ICONS['file_default']
             }
             
             # Type colors
@@ -1006,7 +1555,7 @@ class FileManager:
                 
                 size = analysis['file_type_sizes'].get(file_type, 0)
                 size_str = self.get_size_string(size)
-                icon = type_icons.get(file_type, '📄')
+                icon = type_icons.get(file_type, ICONS['file_default'])
                 color = type_colors.get(file_type, curses.color_pair(6))
                 
                 # Display type summary
@@ -1025,7 +1574,7 @@ class FileManager:
                 current_y += 1
                 
                 # Sample files section
-                self.stdscr.addstr(current_y, 2, "📑 SAMPLE FILES (grouped by type):", curses.color_pair(11) | curses.A_BOLD)
+                self.stdscr.addstr(current_y, 2, f"{ICONS["file_default"]} SAMPLE FILES (grouped by type):", curses.color_pair(11) | curses.A_BOLD)
                 current_y += 1
                 
                 sample_start_y = current_y
@@ -1037,7 +1586,7 @@ class FileManager:
                         break
                     
                     if file_type in file_list and file_list[file_type]:
-                        icon = type_icons.get(file_type, '📄')
+                        icon = type_icons.get(file_type, ICONS['file_default'])
                         color = type_colors.get(file_type, curses.color_pair(6))
                         
                         # Show up to max_samples_per_type files
@@ -2067,7 +2616,7 @@ class FileManager:
                     self.stdscr.addstr(current_y, 2, f"... and {len(folder_structure) - i} more folders", curses.color_pair(6))
                     break
                 
-                indent = "  " * depth + ("└─ " if depth > 0 else "📁 ")
+                indent = "  " * depth + ("└─ " if depth > 0 else ICONS["folder"] + " ")
                 display = f"{indent}{name}/"
                 color = curses.color_pair(1) if depth == 0 else curses.color_pair(11)
                 self.stdscr.addstr(current_y, 4, display[:width-6], color)
@@ -2151,7 +2700,7 @@ class FileManager:
             start_y = 4
             for i in range(scroll_offset, min(scroll_offset + visible_rows, len(folder_structure))):
                 name, depth, parent_idx = folder_structure[i]
-                indent = "  " * depth + ("└─ " if depth > 0 else "📁 ")
+                indent = "  " * depth + ("└─ " if depth > 0 else ICONS["folder"] + " ")
                 display = f"{indent}{name}/"
                 
                 if i == selected:
@@ -2284,7 +2833,7 @@ class FileManager:
             self.message_color = curses.COLOR_RED
     
     def show_operations_menu(self):
-        """Show file operations menu"""
+        """Show file operations menu with styled popup"""
         height, width = self.stdscr.getmaxyx()
         
         menu_items = [
@@ -2298,30 +2847,79 @@ class FileManager:
             ("8", "Unmark All Files", "unmark_all"),
         ]
         
+        icons = [ICONS['copy'], ICONS['cut'], ICONS['trash'],
+                 ICONS['copy'], ICONS['cut'], ICONS['trash'],
+                 ICONS['check'], ICONS['cross']]
+        
         # Draw menu
-        menu_width = 35
-        menu_height = len(menu_items) + 4
+        menu_width = 40
+        menu_height = len(menu_items) + 6
         start_y = (height - menu_height) // 2
         start_x = (width - menu_width) // 2
         
-        # Draw box
-        self.stdscr.attron(curses.color_pair(7))
-        self.stdscr.addstr(start_y, start_x, "╔" + "═" * (menu_width - 2) + "╗")
-        self.stdscr.addstr(start_y + 1, start_x, "║" + " FILE OPERATIONS ".center(menu_width - 2) + "║")
-        self.stdscr.addstr(start_y + 2, start_x, "╠" + "═" * (menu_width - 2) + "╣")
-        self.stdscr.attroff(curses.color_pair(7))
+        popup_body = curses.color_pair(40) if self.has_256_colors else curses.color_pair(7)
+        popup_border = curses.color_pair(43) if self.has_256_colors else curses.color_pair(7)
+        popup_accent = curses.color_pair(41) if self.has_256_colors else curses.color_pair(11)
+        popup_title = curses.color_pair(42) if self.has_256_colors else curses.color_pair(7)
+        shadow_color = curses.color_pair(44) if self.has_256_colors else 0
         
+        # Draw shadow
+        if self.has_256_colors:
+            for dy in range(menu_height):
+                try:
+                    self.stdscr.addstr(start_y + dy + 1, start_x + 2, " " * menu_width, shadow_color)
+                except curses.error:
+                    pass
+        
+        # Draw box background
+        for dy in range(menu_height):
+            try:
+                self.stdscr.addstr(start_y + dy, start_x, " " * menu_width, popup_body)
+            except curses.error:
+                pass
+        
+        # Top border with rounded corners
+        top = ICONS['box_tl'] + ICONS['box_h'] * (menu_width - 2) + ICONS['box_tr']
+        self.stdscr.addstr(start_y, start_x, top, popup_border)
+        
+        # Title row
+        title = f" {ICONS['gear']}  FILE OPERATIONS "
+        title_pad = (menu_width - 2 - len(title)) // 2
+        self.stdscr.addstr(start_y + 1, start_x, ICONS['box_v'], popup_border)
+        self.stdscr.addstr(start_y + 1, start_x + 1, " " * (menu_width - 2), popup_body)
+        self.stdscr.addstr(start_y + 1, start_x + 1 + title_pad, title, popup_title | curses.A_BOLD)
+        self.stdscr.addstr(start_y + 1, start_x + menu_width - 1, ICONS['box_v'], popup_border)
+        
+        # Title separator
+        sep = ICONS['box_t_right'] + ICONS['box_h'] * (menu_width - 2) + ICONS['box_t_left']
+        self.stdscr.addstr(start_y + 2, start_x, sep, popup_border)
+        
+        # Menu items
         for i, (key, label, action) in enumerate(menu_items):
             y = start_y + 3 + i
-            self.stdscr.addstr(y, start_x, "║", curses.color_pair(7))
-            self.stdscr.addstr(y, start_x + 2, f"[{key}] {label}", curses.color_pair(11))
-            self.stdscr.addstr(y, start_x + menu_width - 1, "║", curses.color_pair(7))
+            ico = icons[i] if i < len(icons) else " "
+            self.stdscr.addstr(y, start_x, ICONS['box_v'], popup_border)
+            self.stdscr.addstr(y, start_x + 1, " " * (menu_width - 2), popup_body)
+            item_text = f" {ico}  [{key}] {label}"
+            self.stdscr.addstr(y, start_x + 2, item_text[:menu_width - 4], popup_accent)
+            self.stdscr.addstr(y, start_x + menu_width - 1, ICONS['box_v'], popup_border)
         
-        self.stdscr.attron(curses.color_pair(7))
-        self.stdscr.addstr(start_y + 3 + len(menu_items), start_x, "╠" + "═" * (menu_width - 2) + "╣")
-        self.stdscr.addstr(start_y + 4 + len(menu_items), start_x, "║" + " [q] Cancel ".center(menu_width - 2) + "║")
-        self.stdscr.addstr(start_y + 5 + len(menu_items), start_x, "╚" + "═" * (menu_width - 2) + "╝")
-        self.stdscr.attroff(curses.color_pair(7))
+        # Bottom separator
+        sep2 = ICONS['box_t_right'] + ICONS['box_h'] * (menu_width - 2) + ICONS['box_t_left']
+        self.stdscr.addstr(start_y + 3 + len(menu_items), start_x, sep2, popup_border)
+        
+        # Cancel row
+        cancel_y = start_y + 4 + len(menu_items)
+        self.stdscr.addstr(cancel_y, start_x, ICONS['box_v'], popup_border)
+        self.stdscr.addstr(cancel_y, start_x + 1, " " * (menu_width - 2), popup_body)
+        cancel_text = f" {ICONS['cross']}  [q] Cancel"
+        cancel_pad = (menu_width - 2 - len(cancel_text)) // 2
+        self.stdscr.addstr(cancel_y, start_x + 1 + cancel_pad, cancel_text, popup_accent)
+        self.stdscr.addstr(cancel_y, start_x + menu_width - 1, ICONS['box_v'], popup_border)
+        
+        # Bottom border
+        bot = ICONS['box_bl'] + ICONS['box_h'] * (menu_width - 2) + ICONS['box_br']
+        self.stdscr.addstr(start_y + 5 + len(menu_items), start_x, bot, popup_border)
         
         self.stdscr.refresh()
         
@@ -2465,48 +3063,89 @@ class FileManager:
                     pass
         
         menu_items = [
-            ("1", f"Convert Audio to FLAC ({audio_count} files)", "convert_flac"),
-            ("2", f"Convert Images ({image_count} files)", "convert_images"),
-            ("3", f"Extract Archives ({archive_count} archives)", "extract"),
-            ("4", f"Extract & Convert ({archive_count} archives)", "extract_convert"),
-            ("5", f"ISO to GOD ({iso_count} ISOs)", "iso2god"),
-            ("6", f"Sort Files ({sort_total} files)", "file_sort"),
-            ("7", f"Play Video ({video_count} videos) [{self.config.video_player}]", "video_player"),
-            ("8", f"Browse Images ({image_count} images) [pixel-index]", "view_image"),
-            ("9", "Permission Manager", "fix_perms"),
-            ("e", f"Essentia Tagger ({essentia_audio_count} files)", "essentia_tagger"),
-            ("t", "File Transfer (dual-pane)", "file_transfer"),
-            ("0", "Run Command", "run_cmd"),
-            ("s", "Video Player Settings", "video_settings"),
+            ("1", f"Convert Audio to FLAC ({audio_count} files)", "convert_flac", ICONS['music']),
+            ("2", f"Convert Images ({image_count} files)", "convert_images", ICONS['image']),
+            ("3", f"Extract Archives ({archive_count} archives)", "extract", ICONS['package']),
+            ("4", f"Extract & Convert ({archive_count} archives)", "extract_convert", ICONS['package']),
+            ("5", f"ISO to GOD ({iso_count} ISOs)", "iso2god", ICONS['file_iso']),
+            ("6", f"Sort Files ({sort_total} files)", "file_sort", ICONS['arrow_down']),
+            ("7", f"Play Video ({video_count} videos) [{self.config.video_player}]", "video_player", ICONS['video']),
+            ("8", f"Browse Images ({image_count} images) [pixel-index]", "view_image", ICONS['image']),
+            ("9", "Permission Manager", "fix_perms", ICONS['lock']),
+            ("e", f"Essentia Tagger ({essentia_audio_count} files)", "essentia_tagger", ICONS['music']),
+            ("t", "File Transfer (dual-pane)", "file_transfer", ICONS['copy']),
+            ("0", "Run Command", "run_cmd", ICONS['terminal']),
+            ("s", "Video Player Settings", "video_settings", ICONS['gear']),
         ]
         
         # Draw menu
-        menu_width = 45
-        menu_height = len(menu_items) + 4
+        menu_width = 52
+        menu_height = len(menu_items) + 6
         start_y = (height - menu_height) // 2
         start_x = (width - menu_width) // 2
         
-        # Draw box
-        self.stdscr.attron(curses.color_pair(7))
-        self.stdscr.addstr(start_y, start_x, "+" + "-" * (menu_width - 2) + "+")
-        self.stdscr.addstr(start_y + 1, start_x, "|" + " TOOLS MENU ".center(menu_width - 2) + "|")
-        self.stdscr.addstr(start_y + 2, start_x, "+" + "-" * (menu_width - 2) + "+")
-        self.stdscr.attroff(curses.color_pair(7))
+        popup_body = curses.color_pair(40) if self.has_256_colors else curses.color_pair(7)
+        popup_border = curses.color_pair(43) if self.has_256_colors else curses.color_pair(7)
+        popup_item = curses.color_pair(42) if self.has_256_colors else curses.color_pair(13)
+        popup_title = curses.color_pair(41) if self.has_256_colors else curses.color_pair(7)
+        shadow_color = curses.color_pair(44) if self.has_256_colors else 0
         
-        for i, (key, label, action) in enumerate(menu_items):
+        # Draw shadow
+        if self.has_256_colors:
+            for dy in range(menu_height):
+                try:
+                    self.stdscr.addstr(start_y + dy + 1, start_x + 2, " " * menu_width, shadow_color)
+                except curses.error:
+                    pass
+        
+        # Draw box background
+        for dy in range(menu_height):
+            try:
+                self.stdscr.addstr(start_y + dy, start_x, " " * menu_width, popup_body)
+            except curses.error:
+                pass
+        
+        # Top border
+        top = ICONS['box_tl'] + ICONS['box_h'] * (menu_width - 2) + ICONS['box_tr']
+        self.stdscr.addstr(start_y, start_x, top, popup_border)
+        
+        # Title
+        title = f" {ICONS['wrench']}  TOOLS MENU "
+        title_pad = (menu_width - 2 - len(title)) // 2
+        self.stdscr.addstr(start_y + 1, start_x, ICONS['box_v'], popup_border)
+        self.stdscr.addstr(start_y + 1, start_x + 1, " " * (menu_width - 2), popup_body)
+        self.stdscr.addstr(start_y + 1, start_x + 1 + title_pad, title, popup_title | curses.A_BOLD)
+        self.stdscr.addstr(start_y + 1, start_x + menu_width - 1, ICONS['box_v'], popup_border)
+        
+        # Title separator
+        sep = ICONS['box_t_right'] + ICONS['box_h'] * (menu_width - 2) + ICONS['box_t_left']
+        self.stdscr.addstr(start_y + 2, start_x, sep, popup_border)
+        
+        # Menu items
+        for i, (key, label, action, ico) in enumerate(menu_items):
             y = start_y + 3 + i
-            self.stdscr.addstr(y, start_x, "|", curses.color_pair(7))
-            # Fill the row background with cyan and use yellow text for readability
-            menu_text = f"[{key}] {label}"[:menu_width-4]
-            self.stdscr.addstr(y, start_x + 1, " " * (menu_width - 2), curses.color_pair(7))
-            self.stdscr.addstr(y, start_x + 2, menu_text, curses.color_pair(13) | curses.A_BOLD)
-            self.stdscr.addstr(y, start_x + menu_width - 1, "|", curses.color_pair(7))
+            self.stdscr.addstr(y, start_x, ICONS['box_v'], popup_border)
+            self.stdscr.addstr(y, start_x + 1, " " * (menu_width - 2), popup_body)
+            item_text = f" {ico}  [{key}] {label}"
+            self.stdscr.addstr(y, start_x + 2, item_text[:menu_width - 4], popup_item | curses.A_BOLD)
+            self.stdscr.addstr(y, start_x + menu_width - 1, ICONS['box_v'], popup_border)
         
-        self.stdscr.attron(curses.color_pair(7))
-        self.stdscr.addstr(start_y + 3 + len(menu_items), start_x, "+" + "-" * (menu_width - 2) + "+")
-        self.stdscr.addstr(start_y + 4 + len(menu_items), start_x, "|" + " [q] Cancel ".center(menu_width - 2) + "|")
-        self.stdscr.addstr(start_y + 5 + len(menu_items), start_x, "+" + "-" * (menu_width - 2) + "+")
-        self.stdscr.attroff(curses.color_pair(7))
+        # Bottom separator
+        sep2 = ICONS['box_t_right'] + ICONS['box_h'] * (menu_width - 2) + ICONS['box_t_left']
+        self.stdscr.addstr(start_y + 3 + len(menu_items), start_x, sep2, popup_border)
+        
+        # Cancel
+        cancel_y = start_y + 4 + len(menu_items)
+        self.stdscr.addstr(cancel_y, start_x, ICONS['box_v'], popup_border)
+        self.stdscr.addstr(cancel_y, start_x + 1, " " * (menu_width - 2), popup_body)
+        cancel_text = f" {ICONS['cross']}  [q] Cancel"
+        cancel_pad = (menu_width - 2 - len(cancel_text)) // 2
+        self.stdscr.addstr(cancel_y, start_x + 1 + cancel_pad, cancel_text, popup_item)
+        self.stdscr.addstr(cancel_y, start_x + menu_width - 1, ICONS['box_v'], popup_border)
+        
+        # Bottom border
+        bot = ICONS['box_bl'] + ICONS['box_h'] * (menu_width - 2) + ICONS['box_br']
+        self.stdscr.addstr(start_y + 5 + len(menu_items), start_x, bot, popup_border)
         
         self.stdscr.refresh()
         
@@ -2593,19 +3232,11 @@ class FileManager:
         self.stdscr.keypad(True)
         
         # Reinitialize color pairs
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(5, curses.COLOR_RED, -1)
-        curses.init_pair(6, curses.COLOR_WHITE, -1)
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(8, curses.COLOR_GREEN, -1)
-        curses.init_pair(9, curses.COLOR_RED, -1)
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)
-        curses.init_pair(11, curses.COLOR_BLUE, -1)
-        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
+        if self.has_256_colors:
+            _setup_256_colors()
+        else:
+            _setup_basic_colors()
         
         self.load_directory()
         self.message = "Image conversion complete"
@@ -2664,19 +3295,11 @@ class FileManager:
         self.stdscr.keypad(True)
         
         # Reinitialize color pairs
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(5, curses.COLOR_RED, -1)
-        curses.init_pair(6, curses.COLOR_WHITE, -1)
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(8, curses.COLOR_GREEN, -1)
-        curses.init_pair(9, curses.COLOR_RED, -1)
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)
-        curses.init_pair(11, curses.COLOR_BLUE, -1)
-        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
+        if self.has_256_colors:
+            _setup_256_colors()
+        else:
+            _setup_basic_colors()
         
         self.load_directory()
         self.message = "Audio conversion complete"
@@ -2737,19 +3360,11 @@ class FileManager:
         self.stdscr.keypad(True)
         
         # Reinitialize color pairs
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(5, curses.COLOR_RED, -1)
-        curses.init_pair(6, curses.COLOR_WHITE, -1)
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(8, curses.COLOR_GREEN, -1)
-        curses.init_pair(9, curses.COLOR_RED, -1)
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)
-        curses.init_pair(11, curses.COLOR_BLUE, -1)
-        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
+        if self.has_256_colors:
+            _setup_256_colors()
+        else:
+            _setup_basic_colors()
         
         self.load_directory()
         self.message = "Extract and convert complete"
@@ -2866,19 +3481,11 @@ class FileManager:
         self.stdscr.keypad(True)
         
         # Reinitialize color pairs
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(5, curses.COLOR_RED, -1)
-        curses.init_pair(6, curses.COLOR_WHITE, -1)
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(8, curses.COLOR_GREEN, -1)
-        curses.init_pair(9, curses.COLOR_RED, -1)
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)
-        curses.init_pair(11, curses.COLOR_BLUE, -1)
-        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
+        if self.has_256_colors:
+            _setup_256_colors()
+        else:
+            _setup_basic_colors()
         
         self.load_directory()
         self.message = "ISO to GOD conversion complete"
@@ -2932,19 +3539,11 @@ class FileManager:
         self.stdscr.keypad(True)
         
         # Reinitialize color pairs
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(5, curses.COLOR_RED, -1)
-        curses.init_pair(6, curses.COLOR_WHITE, -1)
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(8, curses.COLOR_GREEN, -1)
-        curses.init_pair(9, curses.COLOR_RED, -1)
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)
-        curses.init_pair(11, curses.COLOR_BLUE, -1)
-        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
+        if self.has_256_colors:
+            _setup_256_colors()
+        else:
+            _setup_basic_colors()
         
         self.load_directory()
         self.message = "Command completed"
@@ -2993,19 +3592,11 @@ class FileManager:
         self.stdscr.keypad(True)
         
         # Reinitialize color pairs
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(5, curses.COLOR_RED, -1)
-        curses.init_pair(6, curses.COLOR_WHITE, -1)
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(8, curses.COLOR_GREEN, -1)
-        curses.init_pair(9, curses.COLOR_RED, -1)
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)
-        curses.init_pair(11, curses.COLOR_BLUE, -1)
-        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
+        if self.has_256_colors:
+            _setup_256_colors()
+        else:
+            _setup_basic_colors()
         
         self.load_directory()
         self.message = "File transfer complete"
@@ -3071,19 +3662,11 @@ class FileManager:
         self.stdscr.keypad(True)
         
         # Reinitialize color pairs
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(5, curses.COLOR_RED, -1)
-        curses.init_pair(6, curses.COLOR_WHITE, -1)
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(8, curses.COLOR_GREEN, -1)
-        curses.init_pair(9, curses.COLOR_RED, -1)
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)
-        curses.init_pair(11, curses.COLOR_BLUE, -1)
-        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
+        if self.has_256_colors:
+            _setup_256_colors()
+        else:
+            _setup_basic_colors()
         
         self.load_directory()
         self.message = "File sorting complete"
@@ -3245,19 +3828,11 @@ class FileManager:
         curses.cbreak()
         curses.curs_set(0)
         self.stdscr.keypad(True)
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-        curses.init_pair(4, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(5, curses.COLOR_RED, -1)
-        curses.init_pair(6, curses.COLOR_WHITE, -1)
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(8, curses.COLOR_GREEN, -1)
-        curses.init_pair(9, curses.COLOR_RED, -1)
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)
-        curses.init_pair(11, curses.COLOR_BLUE, -1)
-        curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-        curses.init_pair(13, curses.COLOR_YELLOW, curses.COLOR_CYAN)
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
+        if self.has_256_colors:
+            _setup_256_colors()
+        else:
+            _setup_basic_colors()
 
     def _get_ncplayer_options_interactive(self):
         """Get ncplayer playback options interactively"""
@@ -3716,18 +4291,10 @@ class AudioInspector:
         self.compare_info = None
         self.show_comparison = False
         
-        # Initialize colors
-        curses.start_color()
-        curses.use_default_colors()
+        # Inherit 256-color state
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
         
-        # Initialize color pairs needed by inspector
-        curses.init_pair(2, curses.COLOR_GREEN, -1)     # High quality values
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)  # Headers
-        curses.init_pair(8, curses.COLOR_GREEN, -1)     # Success
-        curses.init_pair(9, curses.COLOR_RED, -1)       # Error
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)   # Warning
-        curses.init_pair(11, curses.COLOR_BLUE, -1)     # Info
-        curses.init_pair(26, curses.COLOR_WHITE, -1)    # Normal text
+        # Colors are already set up by parent FileManager
         
         # Analyze current file
         self.analyze_file(self.filepath)
@@ -3974,35 +4541,42 @@ class AudioInspector:
         
         # Title
         if self.show_comparison:
-            title = " 🎵 AUDIO QUALITY COMPARISON 🎵 "
+            title = f" {ICONS['music']}  AUDIO QUALITY COMPARISON "
         else:
-            title = " 🎵 AUDIO QUALITY INSPECTOR 🎵 "
+            title = f" {ICONS['music']}  AUDIO QUALITY INSPECTOR "
         
-        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-        self.stdscr.addstr(0, 0, title.center(width)[:width])
-        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        if self.has_256_colors:
+            self.stdscr.addstr(0, 0, " " * width, curses.color_pair(15))
+            title_x = (width - len(title)) // 2
+            self.stdscr.addstr(0, title_x, title, curses.color_pair(17) | curses.A_BOLD)
+        else:
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
         
         # Separator
-        self.stdscr.addstr(1, 0, "─" * width)
+        sep = ICONS['box_h'] * width
+        self.stdscr.addstr(1, 0, sep[:width], curses.color_pair(14) if self.has_256_colors else 0)
     
     def draw_footer(self):
         """Draw footer with help"""
         height, width = self.stdscr.getmaxyx()
         
         # Separator
-        self.stdscr.addstr(height - 4, 0, "─" * width)
+        sep = ICONS['box_h'] * width
+        self.stdscr.addstr(height - 4, 0, sep[:width], curses.color_pair(14) if self.has_256_colors else 0)
         
         # Legend for data sources
-        legend = "[S]=Stream [F]=Format [C]=Calculated"
-        self.stdscr.addstr(height - 3, 1, legend[:width-2], curses.color_pair(10))
+        legend = f" {ICONS['info']}  [S]=Stream  [F]=Format  [C]=Calculated"
+        self.stdscr.addstr(height - 3, 1, legend[:width-2], curses.color_pair(14) if self.has_256_colors else curses.color_pair(10))
         
         # Help text
         if self.show_comparison:
-            help_text = "c: Clear Comparison | q: Back to Inspector | ESC: Exit"
+            help_text = f" c Clear Comparison  {ICONS['box_v']}  q Back to Inspector  {ICONS['box_v']}  ESC Exit"
         else:
-            help_text = "c: Compare with Another File | q/ESC: Exit"
+            help_text = f" c Compare with Another File  {ICONS['box_v']}  q/ESC Exit"
         
-        self.stdscr.addstr(height - 2, 1, help_text[:width-2], curses.color_pair(11))
+        self.stdscr.addstr(height - 2, 1, help_text[:width-2], curses.color_pair(19) if self.has_256_colors else curses.color_pair(11))
         
         # Message
         if self.message:
@@ -4014,7 +4588,7 @@ class AudioInspector:
     def draw_audio_info(self, info, start_y, start_x, width, label=None):
         """Draw audio information panel"""
         if 'error' in info:
-            self.stdscr.addstr(start_y, start_x, f"❌ {info['error']}", curses.color_pair(9))
+            self.stdscr.addstr(start_y, start_x, f"{ICONS['cross']} {info['error']}", curses.color_pair(9))
             if 'message' in info:
                 self.stdscr.addstr(start_y + 1, start_x, info['message'], curses.color_pair(10))
             return start_y + 3
@@ -4030,7 +4604,7 @@ class AudioInspector:
         filename = info['filename']
         if len(filename) > width - 6:
             filename = filename[:width-9] + "..."
-        self.stdscr.addstr(current_y, start_x, f"📄 {filename}", curses.color_pair(11) | curses.A_BOLD)
+        self.stdscr.addstr(current_y, start_x, f"{ICONS['file_default']} {filename}", curses.color_pair(11) | curses.A_BOLD)
         current_y += 2
         
         # Quality Score
@@ -4138,17 +4712,17 @@ class AudioInspector:
                 winner_y += 1
                 
                 if score1 > score2:
-                    msg = f"🏆 FILE 1 IS HIGHER QUALITY (by {score1 - score2} points)"
+                    msg = f"{ICONS['trophy']} FILE 1 IS HIGHER QUALITY (by {score1 - score2} points)"
                     self.stdscr.addstr(winner_y, (width - len(msg)) // 2, msg, curses.color_pair(2) | curses.A_BOLD)
                     winner_y += 1
                     self.stdscr.addstr(winner_y, (width - 30) // 2, "Recommendation: Keep File 1", curses.color_pair(11))
                 elif score2 > score1:
-                    msg = f"🏆 FILE 2 IS HIGHER QUALITY (by {score2 - score1} points)"
+                    msg = f"{ICONS['trophy']} FILE 2 IS HIGHER QUALITY (by {score2 - score1} points)"
                     self.stdscr.addstr(winner_y, (width - len(msg)) // 2, msg, curses.color_pair(2) | curses.A_BOLD)
                     winner_y += 1
                     self.stdscr.addstr(winner_y, (width - 30) // 2, "Recommendation: Keep File 2", curses.color_pair(11))
                 else:
-                    msg = "⚖️  BOTH FILES HAVE EQUAL QUALITY"
+                    msg = f"{ICONS['balance']}  BOTH FILES HAVE EQUAL QUALITY"
                     self.stdscr.addstr(winner_y, (width - len(msg)) // 2, msg, curses.color_pair(10) | curses.A_BOLD)
     
     def draw_single_view(self):
@@ -4297,18 +4871,10 @@ class VideoInspector:
         self.compare_info = None
         self.show_comparison = False
         
-        # Initialize colors
-        curses.start_color()
-        curses.use_default_colors()
+        # Inherit 256-color state
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
         
-        # Initialize color pairs needed by inspector
-        curses.init_pair(2, curses.COLOR_GREEN, -1)     # High quality values
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)  # Headers
-        curses.init_pair(8, curses.COLOR_GREEN, -1)     # Success
-        curses.init_pair(9, curses.COLOR_RED, -1)       # Error
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)   # Warning
-        curses.init_pair(11, curses.COLOR_BLUE, -1)     # Info
-        curses.init_pair(26, curses.COLOR_WHITE, -1)    # Normal text
+        # Colors are already set up by parent FileManager
         
         # Analyze current file
         self.analyze_file(self.filepath)
@@ -4640,35 +5206,42 @@ class VideoInspector:
         
         # Title
         if self.show_comparison:
-            title = " 🎬 VIDEO QUALITY COMPARISON 🎬 "
+            title = f" {ICONS['video']}  VIDEO QUALITY COMPARISON "
         else:
-            title = " 🎬 VIDEO QUALITY INSPECTOR 🎬 "
+            title = f" {ICONS['video']}  VIDEO QUALITY INSPECTOR "
         
-        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-        self.stdscr.addstr(0, 0, title.center(width)[:width])
-        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        if self.has_256_colors:
+            self.stdscr.addstr(0, 0, " " * width, curses.color_pair(15))
+            title_x = (width - len(title)) // 2
+            self.stdscr.addstr(0, title_x, title, curses.color_pair(17) | curses.A_BOLD)
+        else:
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
         
         # Separator
-        self.stdscr.addstr(1, 0, "─" * width)
+        sep = ICONS['box_h'] * width
+        self.stdscr.addstr(1, 0, sep[:width], curses.color_pair(14) if self.has_256_colors else 0)
     
     def draw_footer(self):
         """Draw footer with help"""
         height, width = self.stdscr.getmaxyx()
         
         # Separator
-        self.stdscr.addstr(height - 4, 0, "─" * width)
+        sep = ICONS['box_h'] * width
+        self.stdscr.addstr(height - 4, 0, sep[:width], curses.color_pair(14) if self.has_256_colors else 0)
         
         # Legend for data sources
-        legend = "[S]=Stream [F]=Format [C]=Calculated [E]=Estimated"
-        self.stdscr.addstr(height - 3, 1, legend[:width-2], curses.color_pair(10))
+        legend = f" {ICONS['info']}  [S]=Stream  [F]=Format  [C]=Calculated  [E]=Estimated"
+        self.stdscr.addstr(height - 3, 1, legend[:width-2], curses.color_pair(14) if self.has_256_colors else curses.color_pair(10))
         
         # Help text
         if self.show_comparison:
-            help_text = "c: Clear Comparison | q: Back to Inspector | ESC: Exit"
+            help_text = f" c Clear Comparison  {ICONS['box_v']}  q Back to Inspector  {ICONS['box_v']}  ESC Exit"
         else:
-            help_text = "c: Compare with Another File | q/ESC: Exit"
+            help_text = f" c Compare with Another File  {ICONS['box_v']}  q/ESC Exit"
         
-        self.stdscr.addstr(height - 2, 1, help_text[:width-2], curses.color_pair(11))
+        self.stdscr.addstr(height - 2, 1, help_text[:width-2], curses.color_pair(19) if self.has_256_colors else curses.color_pair(11))
         
         # Message
         if self.message:
@@ -4680,7 +5253,7 @@ class VideoInspector:
     def draw_video_info(self, info, start_y, start_x, width, label=None):
         """Draw video information panel"""
         if 'error' in info:
-            self.stdscr.addstr(start_y, start_x, f"❌ {info['error']}", curses.color_pair(9))
+            self.stdscr.addstr(start_y, start_x, f"{ICONS['cross']} {info['error']}", curses.color_pair(9))
             if 'message' in info:
                 self.stdscr.addstr(start_y + 1, start_x, info['message'], curses.color_pair(10))
             return start_y + 3
@@ -4696,7 +5269,7 @@ class VideoInspector:
         filename = info['filename']
         if len(filename) > width - 6:
             filename = filename[:width-9] + "..."
-        self.stdscr.addstr(current_y, start_x, f"🎬 {filename}", curses.color_pair(11) | curses.A_BOLD)
+        self.stdscr.addstr(current_y, start_x, f"{ICONS['video']} {filename}", curses.color_pair(11) | curses.A_BOLD)
         current_y += 2
         
         # Quality Score
@@ -4824,17 +5397,17 @@ class VideoInspector:
                 winner_y += 1
                 
                 if score1 > score2:
-                    msg = f"🏆 FILE 1 IS HIGHER QUALITY (by {score1 - score2} points)"
+                    msg = f"{ICONS['trophy']} FILE 1 IS HIGHER QUALITY (by {score1 - score2} points)"
                     self.stdscr.addstr(winner_y, (width - len(msg)) // 2, msg, curses.color_pair(2) | curses.A_BOLD)
                     winner_y += 1
                     self.stdscr.addstr(winner_y, (width - 30) // 2, "Recommendation: Keep File 1", curses.color_pair(11))
                 elif score2 > score1:
-                    msg = f"🏆 FILE 2 IS HIGHER QUALITY (by {score2 - score1} points)"
+                    msg = f"{ICONS['trophy']} FILE 2 IS HIGHER QUALITY (by {score2 - score1} points)"
                     self.stdscr.addstr(winner_y, (width - len(msg)) // 2, msg, curses.color_pair(2) | curses.A_BOLD)
                     winner_y += 1
                     self.stdscr.addstr(winner_y, (width - 30) // 2, "Recommendation: Keep File 2", curses.color_pair(11))
                 else:
-                    msg = "⚖️  BOTH FILES HAVE EQUAL QUALITY"
+                    msg = f"{ICONS['balance']}  BOTH FILES HAVE EQUAL QUALITY"
                     self.stdscr.addstr(winner_y, (width - len(msg)) // 2, msg, curses.color_pair(10) | curses.A_BOLD)
     
     def draw_single_view(self):
@@ -4983,18 +5556,10 @@ class ImageInspector:
         self.compare_info = None
         self.show_comparison = False
         
-        # Initialize colors
-        curses.start_color()
-        curses.use_default_colors()
+        # Inherit 256-color state
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
         
-        # Initialize color pairs needed by inspector
-        curses.init_pair(2, curses.COLOR_GREEN, -1)     # High quality values
-        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)  # Headers
-        curses.init_pair(8, curses.COLOR_GREEN, -1)     # Success
-        curses.init_pair(9, curses.COLOR_RED, -1)       # Error
-        curses.init_pair(10, curses.COLOR_YELLOW, -1)   # Warning
-        curses.init_pair(11, curses.COLOR_BLUE, -1)     # Info
-        curses.init_pair(26, curses.COLOR_WHITE, -1)    # Normal text
+        # Colors are already set up by parent FileManager
         
         # Analyze current file
         self.analyze_file(self.filepath)
@@ -5322,31 +5887,38 @@ class ImageInspector:
         
         # Title
         if self.show_comparison:
-            title = " IMAGE QUALITY COMPARISON "
+            title = f" {ICONS['image']}  IMAGE QUALITY COMPARISON "
         else:
-            title = " IMAGE QUALITY INSPECTOR "
+            title = f" {ICONS['image']}  IMAGE QUALITY INSPECTOR "
         
-        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-        self.stdscr.addstr(0, 0, title.center(width)[:width])
-        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        if self.has_256_colors:
+            self.stdscr.addstr(0, 0, " " * width, curses.color_pair(15))
+            title_x = (width - len(title)) // 2
+            self.stdscr.addstr(0, title_x, title, curses.color_pair(17) | curses.A_BOLD)
+        else:
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
         
         # Separator
-        self.stdscr.addstr(1, 0, "-" * width)
+        sep = ICONS['box_h'] * width
+        self.stdscr.addstr(1, 0, sep[:width], curses.color_pair(14) if self.has_256_colors else 0)
     
     def draw_footer(self):
         """Draw footer with help"""
         height, width = self.stdscr.getmaxyx()
         
         # Separator
-        self.stdscr.addstr(height - 3, 0, "-" * width)
+        sep = ICONS['box_h'] * width
+        self.stdscr.addstr(height - 3, 0, sep[:width], curses.color_pair(14) if self.has_256_colors else 0)
         
         # Help text
         if self.show_comparison:
-            help_text = "c: Clear Comparison | q: Back to Inspector | ESC: Exit"
+            help_text = f" c Clear Comparison  {ICONS['box_v']}  q Back to Inspector  {ICONS['box_v']}  ESC Exit"
         else:
-            help_text = "c: Compare with Another Image | q/ESC: Exit"
+            help_text = f" c Compare with Another Image  {ICONS['box_v']}  q/ESC Exit"
         
-        self.stdscr.addstr(height - 2, 1, help_text[:width-2], curses.color_pair(11))
+        self.stdscr.addstr(height - 2, 1, help_text[:width-2], curses.color_pair(19) if self.has_256_colors else curses.color_pair(11))
         
         # Message
         if self.message:
@@ -5648,16 +6220,10 @@ class TextEditor:
         self.selection_mode = False
         self.tab_size = 4
         
-        # Initialize colors for syntax highlighting
-        curses.start_color()
-        curses.use_default_colors()
-        curses.init_pair(20, curses.COLOR_GREEN, -1)    # Strings
-        curses.init_pair(21, curses.COLOR_BLUE, -1)     # Keywords
-        curses.init_pair(22, curses.COLOR_CYAN, -1)     # Comments
-        curses.init_pair(23, curses.COLOR_YELLOW, -1)   # Numbers
-        curses.init_pair(24, curses.COLOR_MAGENTA, -1)  # Special
-        curses.init_pair(25, curses.COLOR_RED, -1)      # Errors
-        curses.init_pair(26, curses.COLOR_WHITE, -1)    # Normal
+        # Inherit 256-color state
+        self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
+        
+        # Colors are already set up by parent FileManager
         
         # Load file
         self.load_file()
@@ -5704,37 +6270,45 @@ class TextEditor:
         height, width = self.stdscr.getmaxyx()
         
         # Title bar
-        title = f" 📝 TEXT EDITOR - {self.filepath.name} "
+        title = f" {ICONS['edit']}  TEXT EDITOR — {self.filepath.name} "
         if self.modified:
-            title += "[Modified] "
+            title += f" {ICONS['dot_filled']} Modified "
         
-        self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-        self.stdscr.addstr(0, 0, title.center(width)[:width])
-        self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
+        if self.has_256_colors:
+            self.stdscr.addstr(0, 0, " " * width, curses.color_pair(15))
+            title_x = (width - len(title)) // 2
+            self.stdscr.addstr(0, max(0, title_x), title[:width], curses.color_pair(17) | curses.A_BOLD)
+        else:
+            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
+            self.stdscr.addstr(0, 0, title.center(width)[:width])
+            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
         
-        # Cursor position
-        pos_str = f"Line {self.cursor_y + 1}/{len(self.lines)} Col {self.cursor_x + 1}"
-        self.stdscr.addstr(1, 1, pos_str[:width-2], curses.color_pair(11))
+        # Cursor position on right, path on left
+        pos_str = f"Ln {self.cursor_y + 1}/{len(self.lines)}  Col {self.cursor_x + 1}"
+        path_str = f" {ICONS['home']} {self.filepath.parent}"
+        if len(path_str) > width - len(pos_str) - 4:
+            path_str = f" {ICONS['home']} …{str(self.filepath.parent)[-(width - len(pos_str) - 8):]}"
         
-        # File path
-        path_str = f"📁 {self.filepath}"
-        if len(path_str) > width - 2:
-            path_str = "📁 ..." + path_str[-(width-6):]
-        self.stdscr.addstr(1, width - len(pos_str) - 2, pos_str, curses.color_pair(11))
+        path_color = curses.color_pair(19) if self.has_256_colors else curses.color_pair(11)
+        pos_color = curses.color_pair(14) if self.has_256_colors else curses.color_pair(11)
+        self.stdscr.addstr(1, 1, path_str[:width-len(pos_str)-3], path_color)
+        self.stdscr.addstr(1, width - len(pos_str) - 2, pos_str, pos_color)
         
         # Separator
-        self.stdscr.addstr(2, 0, "─" * width)
+        sep = ICONS['box_h'] * width
+        self.stdscr.addstr(2, 0, sep[:width], curses.color_pair(14) if self.has_256_colors else 0)
     
     def draw_footer(self):
         """Draw footer with help"""
         height, width = self.stdscr.getmaxyx()
         
         # Separator
-        self.stdscr.addstr(height - 3, 0, "─" * width)
+        sep = ICONS['box_h'] * width
+        self.stdscr.addstr(height - 3, 0, sep[:width], curses.color_pair(14) if self.has_256_colors else 0)
         
         # Help text
-        help_text = "^S:Save ^Q:Quit ^A:SelectAll ^C:Copy ^V:Paste ^D:DeleteAll ^X:ForceQuit"
-        self.stdscr.addstr(height - 2, 1, help_text[:width-2], curses.color_pair(11))
+        help_text = f" ^S Save  ^Q Quit  ^A SelectAll  ^C Copy  ^V Paste  ^D DeleteAll  ^X ForceQuit"
+        self.stdscr.addstr(height - 2, 1, help_text[:width-2], curses.color_pair(14) if self.has_256_colors else curses.color_pair(11))
         
         # Message
         if self.message:
@@ -6099,4 +6673,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         pass
     
-    print("\n👋 Goodbye!\n")
+    print(f"\n{ICONS['check']}  Goodbye!\n")
