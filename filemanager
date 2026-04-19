@@ -759,6 +759,19 @@ class FileManager:
         self._tree_items = []
         self._tree_dirty = True
         
+        # Enable mouse support
+        curses.mousemask(
+            curses.BUTTON1_CLICKED
+            | curses.BUTTON1_DOUBLE_CLICKED
+            | curses.BUTTON4_PRESSED   # scroll up
+            | curses.BUTTON5_PRESSED   # scroll down (backport)
+            | curses.REPORT_MOUSE_POSITION
+        )
+        # Shorter click-vs-doubleclick delay (default 166ms)
+        curses.mouseinterval(150)
+        self._last_click_time = 0.0
+        self._last_click_index = -1
+        
         # Hide cursor
         curses.curs_set(0)
         
@@ -2888,6 +2901,18 @@ class FileManager:
             
             # Handle input
             key = self.stdscr.getch()
+            
+            # Mouse click → select + activate item
+            if key == curses.KEY_MOUSE:
+                try:
+                    _, mx, my, _, bstate = curses.getmouse()
+                    if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED):
+                        idx = my - start_y
+                        if 0 <= idx < len(menu_items) and not menu_items[idx].startswith("─"):
+                            selected = idx
+                            key = ord('\n')  # treat as Enter
+                except curses.error:
+                    continue
             
             if key == curses.KEY_UP:
                 selected = max(0, selected - 1)
@@ -5310,16 +5335,23 @@ class FileManager:
         
         self.stdscr.refresh()
         
-        # Get selection
+        # Get selection (keyboard or mouse click)
         key = self.stdscr.getch()
         
+        # Handle mouse click on menu items
+        if key == curses.KEY_MOUSE:
+            try:
+                _, mx, my, _, bstate = curses.getmouse()
+                if bstate & (curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED):
+                    row_idx = my - (start_y + 3)
+                    if 0 <= row_idx < len(menu_items) and start_x <= mx < start_x + menu_width:
+                        key = ord(menu_items[row_idx][0])
+                    elif my == cancel_y:
+                        key = ord('q')
+            except curses.error:
+                return
+        
         if key == ord('1'):
-            self.run_audio_to_flac()
-        elif key == ord('2'):
-            self.run_image_convert()
-        elif key == ord('3'):
-            self.extract_archives()
-        elif key == ord('4'):
             self.run_extract_and_convert()
         elif key == ord('5'):
             self.run_iso2god()
@@ -6402,6 +6434,92 @@ class FileManager:
 
             if sidebar_handled:
                 continue
+
+            # ── Mouse handling ──────────────────────────────────────
+            if key == curses.KEY_MOUSE:
+                try:
+                    _, mx, my, _, bstate = curses.getmouse()
+                except curses.error:
+                    continue
+                layout = self._calc_layout()
+                y0 = layout['content_start_y']
+                y_end = layout['footer_y']
+
+                # Determine which panel the mouse is over
+                mouse_panel = 'files'
+                if layout['sidebar_width'] > 0 and mx < layout['sidebar_width']:
+                    mouse_panel = 'sidebar'
+                elif layout['preview_width'] > 0 and mx >= layout['preview_x']:
+                    mouse_panel = 'preview'
+
+                # Scroll wheel — scrolls panel under cursor
+                if bstate & curses.BUTTON4_PRESSED:
+                    if mouse_panel == 'sidebar' and self.show_sidebar:
+                        self.sidebar_selected = max(0, self.sidebar_selected - 3)
+                    else:
+                        self.selected_index = max(0, self.selected_index - 3)
+                    continue
+                if bstate & curses.BUTTON5_PRESSED:
+                    if mouse_panel == 'sidebar' and self.show_sidebar:
+                        self.sidebar_selected = min(len(self.sidebar_items) - 1, self.sidebar_selected + 3)
+                    else:
+                        self.selected_index = min(len(self.entries) - 1, self.selected_index + 3)
+                    continue
+
+                # Ignore clicks outside the content area (header / footer)
+                if my < y0 or my >= y_end:
+                    continue
+
+                clicked_panel = mouse_panel
+
+                if clicked_panel == 'sidebar' and self.show_sidebar:
+                    self.active_panel = 'sidebar'
+                    row = my - y0
+                    sidebar_visible_start = self.sidebar_scroll
+                    idx = sidebar_visible_start + row
+                    if 0 <= idx < len(self.sidebar_items):
+                        self.sidebar_selected = idx
+                        # Double-click or second click on same item → activate
+                        if bstate & curses.BUTTON1_DOUBLE_CLICKED:
+                            item_type, item_data, _indent = self.sidebar_items[idx]
+                            if item_type == 'quick':
+                                self.change_directory(item_data['path'])
+                            elif item_type == 'tree':
+                                path = item_data['path']
+                                path_key = str(path.resolve())
+                                if self.tree_expanded.get(path_key, False):
+                                    self.change_directory(path)
+                                else:
+                                    self.tree_expanded[path_key] = True
+                                    self._tree_dirty = True
+
+                elif clicked_panel == 'files':
+                    if self.active_panel != 'files':
+                        self.active_panel = 'files'
+                    row = my - y0
+                    entry_index = self.scroll_offset + row
+                    if 0 <= entry_index < len(self.entries):
+                        now = time.monotonic()
+                        # Double-click → open/enter
+                        if bstate & curses.BUTTON1_DOUBLE_CLICKED:
+                            self.selected_index = entry_index
+                            self.handle_enter()
+                        else:
+                            # Single click → select; second fast click on same → open
+                            if (entry_index == self._last_click_index
+                                    and now - self._last_click_time < 0.4):
+                                self.selected_index = entry_index
+                                self.handle_enter()
+                            else:
+                                self.selected_index = entry_index
+                            self._last_click_index = entry_index
+                            self._last_click_time = now
+
+                elif clicked_panel == 'preview':
+                    if self.active_panel != 'files':
+                        self.active_panel = 'files'
+                continue
+            # ── End mouse handling ──────────────────────────────────
             
             if key == curses.KEY_UP:
                 self.selected_index = max(0, self.selected_index - 1)
