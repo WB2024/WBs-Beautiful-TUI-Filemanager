@@ -342,30 +342,99 @@ PALETTE_COMMANDS = [
 ]
 
 
-def tc_addstr(stdscr, y, x, text, fg=None, bg=None, bold=False, dim=False):
-    """Write text with true-color via escape sequences, positioned with curses.
-    Falls back to curses if true color not available."""
+# ── Dynamic curses color pair allocation ──────────────────────────────
+# Maps THEME RGB tuples → curses color slots and pairs so all rendering
+# goes through curses' buffer (no raw stdout writes that get clobbered
+# by stdscr.refresh()).
+_tc_color_cache = {}    # RGB tuple → curses color slot
+_tc_pair_cache = {}     # (fg_slot, bg_slot) → curses pair number
+_tc_next_color_slot = 76   # Slots 16-75 are used by _setup_256_colors
+_tc_next_pair_num = 91     # Pairs 1-90 are used by _setup_256_colors
+_tc_max_color_slot = 254
+_tc_max_pair_num = 32000   # Updated at init from curses.COLOR_PAIRS
+_tc_limits_set = False
+
+
+def _tc_ensure_limits():
+    global _tc_max_pair_num, _tc_limits_set
+    if _tc_limits_set:
+        return
+    _tc_limits_set = True
     try:
-        seq = ""
-        if fg:
-            seq += tc_fg(*fg)
-        if bg:
-            seq += tc_bg(*bg)
-        if bold:
-            seq += "\x1b[1m"
-        if dim:
-            seq += "\x1b[2m"
-        seq += text + tc_reset()
-        sys.stdout.write(f"\x1b[{y+1};{x+1}H{seq}")
-        sys.stdout.flush()
+        _tc_max_pair_num = min(curses.COLOR_PAIRS - 1, 32000)
     except Exception:
-        try:
-            attr = curses.A_BOLD if bold else 0
-            if dim:
-                attr |= curses.A_DIM
-            stdscr.addstr(y, x, text, attr)
-        except curses.error:
-            pass
+        _tc_max_pair_num = 255
+
+
+def _tc_quantize(rgb, step=4):
+    """Round RGB components to reduce unique color count."""
+    return (min(255, (rgb[0] // step) * step),
+            min(255, (rgb[1] // step) * step),
+            min(255, (rgb[2] // step) * step))
+
+
+def _tc_get_slot(rgb):
+    """Get or allocate a curses color slot for an RGB tuple."""
+    global _tc_next_color_slot
+    q = _tc_quantize(rgb)
+    if q in _tc_color_cache:
+        return _tc_color_cache[q]
+    if _tc_next_color_slot > _tc_max_color_slot:
+        return -1
+    slot = _tc_next_color_slot
+    _tc_next_color_slot += 1
+    try:
+        curses.init_color(slot, q[0] * 1000 // 255, q[1] * 1000 // 255, q[2] * 1000 // 255)
+    except curses.error:
+        return -1
+    _tc_color_cache[q] = slot
+    return slot
+
+
+def _tc_get_pair(fg_slot, bg_slot):
+    """Get or allocate a curses color pair for fg/bg slot combo."""
+    global _tc_next_pair_num
+    key = (fg_slot, bg_slot)
+    if key in _tc_pair_cache:
+        return _tc_pair_cache[key]
+    if _tc_next_pair_num >= _tc_max_pair_num:
+        return 0
+    pair = _tc_next_pair_num
+    _tc_next_pair_num += 1
+    try:
+        curses.init_pair(pair, fg_slot, bg_slot)
+    except curses.error:
+        return 0
+    _tc_pair_cache[key] = pair
+    return pair
+
+
+def tc_addstr(stdscr, y, x, text, fg=None, bg=None, bold=False, dim=False):
+    """Write text with true-color-like rendering through curses' buffer.
+    Dynamically allocates curses color slots/pairs from RGB tuples so that
+    stdscr.clear() and stdscr.refresh() work correctly."""
+    _tc_ensure_limits()
+
+    can_remap = curses.COLORS >= 256 and curses.can_change_color()
+    fg_slot = -1  # default fg
+    bg_slot = -1  # default bg
+
+    if fg and can_remap:
+        fg_slot = _tc_get_slot(fg)
+    if bg and can_remap:
+        bg_slot = _tc_get_slot(bg)
+
+    pair_num = _tc_get_pair(fg_slot, bg_slot)
+    attr = curses.color_pair(pair_num)
+    if bold:
+        attr |= curses.A_BOLD
+    if dim:
+        attr |= curses.A_DIM
+
+    try:
+        stdscr.addstr(y, x, text, attr)
+    except curses.error:
+        pass
 
 
 def _setup_256_colors():
