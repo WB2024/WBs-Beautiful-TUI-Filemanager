@@ -428,8 +428,14 @@ def _tc_get_pair(fg_slot, bg_slot):
     return pair
 
 
+_tc_attr_cache = {}  # (fg, bg, bold, dim) → curses attr
+
 def _tc_attr(fg=None, bg=None, bold=False, dim=False):
     """Build a curses attr from RGB tuples. Fast path for pre-allocated colors."""
+    cache_key = (fg, bg, bold, dim)
+    cached = _tc_attr_cache.get(cache_key)
+    if cached is not None:
+        return cached
     fg_slot = _tc_get_slot(fg) if (fg and _tc_can_remap) else -1
     bg_slot = _tc_get_slot(bg) if (bg and _tc_can_remap) else -1
     pair_num = _tc_get_pair(fg_slot, bg_slot)
@@ -438,6 +444,7 @@ def _tc_attr(fg=None, bg=None, bold=False, dim=False):
         attr |= curses.A_BOLD
     if dim:
         attr |= curses.A_DIM
+    _tc_attr_cache[cache_key] = attr
     return attr
 
 
@@ -738,13 +745,22 @@ class FileManager:
         self._git_status = {}
         self._git_root = None
         self._git_dir_path = None
+
+        # Layout cache (invalidated on terminal resize or panel toggle)
+        self._cached_layout = None
+        self._cached_layout_size = (0, 0)
+        self._cached_layout_panels = (True, True)  # (show_sidebar, show_preview)
+
+        # Dirty flag to avoid unnecessary redraws
+        self._needs_redraw = True
+        self._last_selected_index = -1
+
+        # Tree cache (only rebuild on expand/collapse or explicit request)
+        self._tree_items = []
+        self._tree_dirty = True
         
         # Hide cursor
         curses.curs_set(0)
-
-        # Use halfdelay so getch() returns -1 after 50ms if no key pressed
-        # This keeps the UI responsive instead of blocking indefinitely
-        curses.halfdelay(5)
         
         # Load directory
         self.load_directory()
@@ -758,9 +774,10 @@ class FileManager:
             pass
 
     def _restore_halfdelay(self):
-        """Restore halfdelay mode after interactive dialogs."""
+        """Restore normal mode after interactive dialogs (blocking getch)."""
         try:
-            curses.halfdelay(5)
+            curses.nocbreak()
+            curses.cbreak()
         except curses.error:
             pass
     
@@ -1007,16 +1024,22 @@ class FileManager:
             self.selected_index = max(0, len(self.entries) - 1)
 
         self._detect_git_info()
-        self._build_tree()
+        self._tree_dirty = True
+        self._needs_redraw = True
+        # Invalidate preview cache on directory change
+        self.preview_cache = {'path': None, 'content': None, 'image_id': 0}
 
-    def _build_tree(self):
+    def _build_tree(self, force=False):
         """Build a flat, renderable directory tree rooted at the user's home."""
+        if not force and not self._tree_dirty:
+            return
+        self._tree_dirty = False
         try:
             home = Path.home().resolve()
         except (OSError, RuntimeError):
             self._tree_items = []
             return
-        max_depth = 5
+        max_depth = 3
         tree_items = []
 
         def list_subdirs(path):
@@ -1077,75 +1100,86 @@ class FileManager:
         self._git_status = {}
         self._git_root = None
         try:
+            # Quick check - skip if git is not available
+            if not shutil.which('git'):
+                return
+            # Combine rev-parse checks into one call
             result = subprocess.run(
-                ['git', 'rev-parse', '--is-inside-work-tree'],
-                capture_output=True, text=True, timeout=1,
+                ['git', 'rev-parse', '--is-inside-work-tree', '--show-toplevel'],
+                capture_output=True, text=True, timeout=2,
                 cwd=str(self.current_dir)
             )
-            if result.returncode == 0:
-                branch = subprocess.run(
-                    ['git', 'branch', '--show-current'],
-                    capture_output=True, text=True, timeout=1,
-                    cwd=str(self.current_dir)
-                )
-                self._git_branch = branch.stdout.strip() or 'HEAD'
+            if result.returncode != 0:
+                return
+            
+            lines_out = result.stdout.strip().splitlines()
+            if len(lines_out) >= 2 and lines_out[1].strip():
+                self._git_root = Path(lines_out[1].strip())
 
-                root = subprocess.run(
-                    ['git', 'rev-parse', '--show-toplevel'],
-                    capture_output=True, text=True, timeout=1,
-                    cwd=str(self.current_dir)
-                )
-                if root.returncode == 0 and root.stdout.strip():
-                    self._git_root = Path(root.stdout.strip())
+            # Get branch and status in two calls
+            branch = subprocess.run(
+                ['git', 'branch', '--show-current'],
+                capture_output=True, text=True, timeout=2,
+                cwd=str(self.current_dir)
+            )
+            self._git_branch = branch.stdout.strip() or 'HEAD'
 
-                status = subprocess.run(
-                    ['git', 'status', '--porcelain=v1'],
-                    capture_output=True, text=True, timeout=1,
-                    cwd=str(self.current_dir)
-                )
-                self._git_is_dirty = bool(status.stdout.strip())
+            status = subprocess.run(
+                ['git', 'status', '--porcelain=v1'],
+                capture_output=True, text=True, timeout=2,
+                cwd=str(self.current_dir)
+            )
+            self._git_is_dirty = bool(status.stdout.strip())
 
-                for line in status.stdout.splitlines():
-                    if len(line) < 3:
-                        continue
+            for line in status.stdout.splitlines():
+                if len(line) < 3:
+                    continue
 
-                    xy = line[:2]
-                    path_part = line[3:].strip()
-                    if not path_part or xy == '!!':
-                        continue
+                xy = line[:2]
+                path_part = line[3:].strip()
+                if not path_part or xy == '!!':
+                    continue
 
-                    # Rename/copy entries use "old -> new"; track the destination path.
-                    if ' -> ' in path_part:
-                        path_part = path_part.split(' -> ', 1)[1].strip()
+                # Rename/copy entries use "old -> new"; track the destination path.
+                if ' -> ' in path_part:
+                    path_part = path_part.split(' -> ', 1)[1].strip()
 
-                    # Handle quoted porcelain paths with escaped quotes/backslashes.
-                    if len(path_part) >= 2 and path_part[0] == '"' and path_part[-1] == '"':
-                        path_part = path_part[1:-1].replace('\\"', '"').replace('\\\\', '\\')
+                # Handle quoted porcelain paths with escaped quotes/backslashes.
+                if len(path_part) >= 2 and path_part[0] == '"' and path_part[-1] == '"':
+                    path_part = path_part[1:-1].replace('\\"', '"').replace('\\\\', '\\')
 
-                    path_part = path_part.replace('\\', '/').lstrip('./')
-                    if not path_part:
-                        continue
+                path_part = path_part.replace('\\', '/').lstrip('./')
+                if not path_part:
+                    continue
 
-                    if xy[0] == '?' or xy[1] == '?':
-                        mapped = 'untracked'
-                    elif xy[0] == 'M' or xy[1] == 'M':
-                        mapped = 'modified'
-                    elif xy[0] == 'A':
-                        mapped = 'added'
-                    elif xy[0] == 'D' or xy[1] == 'D':
-                        mapped = 'deleted'
-                    elif xy[0] == 'R' or xy[1] == 'R':
-                        mapped = 'renamed'
-                    else:
-                        continue
+                if xy[0] == '?' or xy[1] == '?':
+                    mapped = 'untracked'
+                elif xy[0] == 'M' or xy[1] == 'M':
+                    mapped = 'modified'
+                elif xy[0] == 'A':
+                    mapped = 'added'
+                elif xy[0] == 'D' or xy[1] == 'D':
+                    mapped = 'deleted'
+                elif xy[0] == 'R' or xy[1] == 'R':
+                    mapped = 'renamed'
+                else:
+                    continue
 
-                    self._git_status[path_part] = mapped
+                self._git_status[path_part] = mapped
         except Exception:
             pass
 
     def _calc_layout(self):
         """Calculate panel dimensions based on terminal size and visibility toggles."""
         height, width = self.stdscr.getmaxyx()
+
+        # Return cached layout if terminal size and panel toggles haven't changed
+        current_size = (height, width)
+        current_panels = (self.show_sidebar, self.show_preview)
+        if (self._cached_layout is not None
+                and self._cached_layout_size == current_size
+                and self._cached_layout_panels == current_panels):
+            return self._cached_layout
 
         compact_mode = height < 20
         header_rows = 2 if compact_mode else 3
@@ -1193,7 +1227,7 @@ class FileManager:
             preview_width = 0
             file_list_width = width
 
-        return {
+        result = {
             'width': width,
             'height': height,
             'compact_mode': compact_mode,
@@ -1209,6 +1243,10 @@ class FileManager:
             'preview_width': preview_width,
             'footer_y': height - footer_rows,
         }
+        self._cached_layout = result
+        self._cached_layout_size = current_size
+        self._cached_layout_panels = current_panels
+        return result
     
     def draw_header(self, layout):
         """Draw the 3-row header: title/breadcrumb, column headers, separator."""
@@ -1365,13 +1403,18 @@ class FileManager:
         clip_mode = self.clipboard_operation or '-'
         left_status = f" {check_icon} {marked}  {clipboard_icon} {clip_count}:{clip_mode} "
 
-        # Center disk usage mini bar
+        # Center disk usage mini bar (cached per directory via _disk_info)
         center_status = ""
         disk_color = THEME['accent_green']
         try:
-            st = os.statvfs(str(self.current_dir))
-            total = st.f_blocks * st.f_frsize
-            avail = st.f_bavail * st.f_frsize
+            if not hasattr(self, '_disk_cache_dir') or self._disk_cache_dir != str(self.current_dir):
+                self._disk_cache_dir = str(self.current_dir)
+                st = os.statvfs(str(self.current_dir))
+                total = st.f_blocks * st.f_frsize
+                avail = st.f_bavail * st.f_frsize
+                self._disk_cache = (total, avail)
+            else:
+                total, avail = self._disk_cache
             used = max(0, total - avail)
             pct = (used / total * 100.0) if total else 0.0
             if pct >= 85:
@@ -1508,15 +1551,14 @@ class FileManager:
         scrollbar_needed = len(self.entries) > visible_count
         content_w = w - (1 if scrollbar_needed else 0)
 
-        # Paint panel background first
-        for y in range(y0, y_end):
-            try:
-                if self.use_true_color:
-                    tc_addstr(self.stdscr, y, x, ' ' * w, bg=THEME['bg_base'])
-                else:
+        # Background is already set by bkgd()+erase() for true color,
+        # only paint explicitly for non-256-color mode
+        if not self.use_true_color:
+            for y in range(y0, y_end):
+                try:
                     self.stdscr.addstr(y, x, ' ' * w, curses.color_pair(14))
-            except curses.error:
-                pass
+                except curses.error:
+                    pass
 
         # Draw each visible entry
         check_icon = ICONS['check'] or '✓'
@@ -1770,6 +1812,9 @@ class FileManager:
         def add_quick_item(label, path, icon=''):
             quick_items.append({'label': label, 'path': path, 'icon': icon})
 
+        # Build tree lazily (only when dirty)
+        self._build_tree()
+
         home = Path.home().resolve()
         quick_items = []
         add_quick_item('Home', home, '⌂')
@@ -1948,6 +1993,7 @@ class FileManager:
         if not same_path:
             kitty_delete_images()
             self.preview_cache['image_id'] = 0
+            self.preview_cache['_kitty_sent'] = False
 
         # Fill panel background
         if self.use_true_color:
@@ -2125,7 +2171,12 @@ class FileManager:
                 type_counts = defaultdict(int)
                 capped = False
                 try:
-                    for root, _, files in os.walk(path):
+                    for root, dirs, files in os.walk(path):
+                        # Limit directory depth to avoid deep scans
+                        depth = root.count(os.sep) - str(path).count(os.sep)
+                        if depth >= 2:
+                            dirs.clear()
+                            continue
                         for file_name in files:
                             full_path = Path(root) / file_name
                             try:
@@ -2137,7 +2188,7 @@ class FileManager:
                             total_size += size
                             type_sizes[category] += size
                             type_counts[category] += 1
-                            if file_count >= 200:
+                            if file_count >= 100:
                                 capped = True
                                 break
                         if capped:
@@ -2424,7 +2475,10 @@ class FileManager:
                 image_y = content_top
                 if self.preview_cache.get('image_id', 0) == 0:
                     self.preview_cache['image_id'] = int(time.time() * 1000) % 100000
-                kitty_send_image(str(path), image_x, image_y, image_cols, image_rows, image_id=self.preview_cache['image_id'])
+                # Only send image to Kitty if not already sent for this path
+                if not self.preview_cache.get('_kitty_sent'):
+                    kitty_send_image(str(path), image_x, image_y, image_cols, image_rows, image_id=self.preview_cache['image_id'])
+                    self.preview_cache['_kitty_sent'] = True
                 info_y = image_y + image_rows + 1
             else:
                 ascii_art = preview_data.get('ascii_art')
@@ -2449,8 +2503,8 @@ class FileManager:
 
         # Audio preview
         if preview_data.get('type') == 'audio':
-            art_tmp = None
-            if self.kitty.has_graphics and shutil.which('ffmpeg'):
+            if self.kitty.has_graphics and shutil.which('ffmpeg') and not self.preview_cache.get('_kitty_sent'):
+                art_tmp = None
                 fd, art_tmp = tempfile.mkstemp(suffix='.jpg')
                 os.close(fd)
                 try:
@@ -2467,6 +2521,7 @@ class FileManager:
                         if self.preview_cache.get('image_id', 0) == 0:
                             self.preview_cache['image_id'] = int(time.time() * 1000) % 100000
                         kitty_send_image(art_tmp, image_x, image_y, image_cols, image_rows, image_id=self.preview_cache['image_id'])
+                        self.preview_cache['_kitty_sent'] = True
                         info_y = image_y + image_rows + 1
                 except Exception:
                     pass
@@ -2505,8 +2560,8 @@ class FileManager:
 
         # Video preview
         if preview_data.get('type') == 'video':
-            thumb_tmp = None
-            if self.kitty.has_graphics and shutil.which('ffmpeg'):
+            if self.kitty.has_graphics and shutil.which('ffmpeg') and not self.preview_cache.get('_kitty_sent'):
+                thumb_tmp = None
                 fd, thumb_tmp = tempfile.mkstemp(suffix='.jpg')
                 os.close(fd)
                 try:
@@ -2523,6 +2578,7 @@ class FileManager:
                         if self.preview_cache.get('image_id', 0) == 0:
                             self.preview_cache['image_id'] = int(time.time() * 1000) % 100000
                         kitty_send_image(thumb_tmp, image_x, image_y, image_cols, image_rows, image_id=self.preview_cache['image_id'])
+                        self.preview_cache['_kitty_sent'] = True
                         info_y = image_y + image_rows + 1
                 except Exception:
                     pass
@@ -2566,7 +2622,7 @@ class FileManager:
         try:
             if self.use_true_color:
                 self.stdscr.bkgd(' ', _tc_attr(bg=THEME['bg_base']))
-            self.stdscr.clear()
+            self.stdscr.erase()
             layout = self._calc_layout()
             self.draw_panel_borders(layout)
             self.draw_header(layout)
@@ -2814,6 +2870,7 @@ class FileManager:
                     break
             elif key == 27:  # ESC
                 break
+        self._restore_halfdelay()
     
     def get_text_input(self, prompt):
         """Get text input from user"""
@@ -3062,10 +3119,13 @@ class FileManager:
                 curses.curs_set(0)
             except curses.error:
                 pass
+            self._restore_halfdelay()
             self.draw()
     
     def show_message_box(self, title, lines, wait_for_key=True, style='normal'):
         """Show a styled message box overlay"""
+        if wait_for_key:
+            self._enter_blocking_mode()
         height, width = self.stdscr.getmaxyx()
         
         line_max = max((len(line) for line in lines), default=0)
@@ -3121,6 +3181,7 @@ class FileManager:
             self.stdscr.refresh()
             if wait_for_key:
                 self.stdscr.getch()
+                self._restore_halfdelay()
             return
         
         popup_body = curses.color_pair(40) if self.has_256_colors else curses.color_pair(7)
@@ -3209,6 +3270,7 @@ class FileManager:
         
         if wait_for_key:
             self.stdscr.getch()
+            self._restore_halfdelay()
     
     def show_progress(self, title, current_item, item_num, total_items, bytes_done=0, bytes_total=0):
         """Display a beautiful progress indicator for file operations"""
@@ -6210,18 +6272,9 @@ class FileManager:
     def run(self):
         """Main loop"""
         while self.running:
-            # Ensure halfdelay is active (menus may switch to blocking mode)
-            self._restore_halfdelay()
             self.draw()
             
-            try:
-                key = self.stdscr.getch()
-            except curses.error:
-                continue
-            
-            # halfdelay returns -1 when no key pressed — just redraw
-            if key == -1:
-                continue
+            key = self.stdscr.getch()
             
             # Clear message on any key
             if self.message:
@@ -6256,7 +6309,7 @@ class FileManager:
                             path_key = str(path.resolve())
                             if not self.tree_expanded.get(path_key, False):
                                 self.tree_expanded[path_key] = True
-                                self._build_tree()
+                                self._tree_dirty = True
                             else:
                                 home = Path.home().resolve()
                                 target_resolved = path.resolve()
@@ -6274,7 +6327,7 @@ class FileManager:
                         if item_type == 'tree':
                             path_key = str(item_data['path'].resolve())
                             self.tree_expanded[path_key] = False
-                            self._build_tree()
+                            self._tree_dirty = True
                     sidebar_handled = True
                 elif key == curses.KEY_RIGHT:
                     if self.sidebar_items:
@@ -6282,7 +6335,7 @@ class FileManager:
                         if item_type == 'tree':
                             path_key = str(item_data['path'].resolve())
                             self.tree_expanded[path_key] = True
-                            self._build_tree()
+                            self._tree_dirty = True
                     sidebar_handled = True
                 elif key == ord(']') or key == 27:
                     self.active_panel = 'files'
@@ -6325,6 +6378,7 @@ class FileManager:
                     pass
                 self.stdscr.clear()
                 self.preview_cache = {'path': None, 'content': None, 'image_id': 0}
+                self._cached_layout = None  # Invalidate layout cache on resize
 
             elif key == ord('/'):
                 # Floating search palette
@@ -6343,6 +6397,7 @@ class FileManager:
                 self.show_sidebar = not self.show_sidebar
                 if not self.show_sidebar and self.active_panel == 'sidebar':
                     self.active_panel = 'files'
+                self._cached_layout = None
 
             elif key == ord('['):
                 # Focus sidebar when visible
@@ -6352,6 +6407,7 @@ class FileManager:
             elif key == ord('P'):
                 # Toggle preview panel visibility
                 self.show_preview = not self.show_preview
+                self._cached_layout = None
             
             elif key == ord('b'):
                 # Bookmarks
