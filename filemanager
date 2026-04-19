@@ -2415,13 +2415,6 @@ class FileManager:
         draw_line(info_y + 1, f"Size: {size_str}", fg=THEME['text_secondary'])
         draw_line(info_y + 2, f"Perms: {selected_entry.get('perms', self.get_permissions_string(path))}", fg=THEME['text_secondary'])
         draw_line(info_y + 3, f"MIME: {mime}", fg=THEME['text_dim'])
-        try:
-            if self.use_true_color:
-                tc_addstr(self.stdscr, label_y, label_x, label[:w], fg=THEME['text_dim'], bg=THEME['bg_surface'])
-            else:
-                self.stdscr.addstr(label_y, label_x, label[:w], curses.color_pair(14))
-        except curses.error:
-            pass
     
     def draw(self):
         """Draw the entire interface."""
