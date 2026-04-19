@@ -911,59 +911,81 @@ class FileManager:
         return ICONS['file_default']
     
     def analyze_directory_contents(self, path):
-        """Analyze directory contents - count files by type and get total size"""
+        """Analyze directory contents - count files by type and get total size.
+        Limited to depth 2 and 500 files to avoid hanging on large directories."""
         file_types = defaultdict(int)
         file_type_sizes = defaultdict(int)
         total_files = 0
         total_size = 0
+        partial = False
         
         try:
-            for item in path.rglob('*'):
-                if item.is_file():
+            base_depth = str(path).count(os.sep)
+            scan_start = time.monotonic()
+            for root, dirs, files in os.walk(path):
+                if time.monotonic() - scan_start > 1.0:
+                    partial = True
+                    break
+                depth = root.count(os.sep) - base_depth
+                if depth >= 2:
+                    dirs.clear()
+                    continue
+                for fname in files:
                     total_files += 1
+                    if total_files > 500:
+                        partial = True
+                        break
+                    full = os.path.join(root, fname)
                     try:
-                        size = item.stat().st_size
+                        size = os.stat(full).st_size
                         total_size += size
-                        
-                        file_type = self.get_file_type_category(item)
+                        file_type = self.get_file_type_category(Path(full))
                         file_types[file_type] += 1
                         file_type_sizes[file_type] += size
-                    except:
+                    except OSError:
                         pass
-        except:
+                if partial:
+                    break
+        except OSError:
             pass
         
         return {
             'total_files': total_files,
             'total_size': total_size,
             'file_types': dict(file_types),
-            'file_type_sizes': dict(file_type_sizes)
+            'file_type_sizes': dict(file_type_sizes),
+            'partial': partial,
         }
     
-    def get_directory_file_list(self, path, max_depth=3):
-        """Get a hierarchical list of files in directory"""
+    def get_directory_file_list(self, path, max_depth=2):
+        """Get a hierarchical list of files in directory (depth-limited)"""
         files_by_type = defaultdict(list)
+        count = 0
         
         try:
-            for item in path.rglob('*'):
-                if item.is_file():
-                    # Calculate relative path
+            base_depth = str(path).count(os.sep)
+            for root, dirs, files in os.walk(path):
+                depth = root.count(os.sep) - base_depth
+                if depth >= max_depth:
+                    dirs.clear()
+                    continue
+                for fname in files:
+                    count += 1
+                    if count > 200:
+                        return dict(files_by_type)
+                    full = os.path.join(root, fname)
                     try:
-                        rel_path = item.relative_to(path)
-                        depth = len(rel_path.parts) - 1
-                        
-                        if depth <= max_depth:
-                            file_type = self.get_file_type_category(item)
-                            size = item.stat().st_size
-                            
-                            files_by_type[file_type].append({
-                                'name': item.name,
-                                'path': str(rel_path),
-                                'size': size
-                            })
-                    except:
+                        rel = os.path.relpath(full, path)
+                        size = os.stat(full).st_size
+                        file_type = self.get_file_type_category(Path(full))
+                        files_by_type[file_type].append({
+                            'name': fname,
+                            'path': rel,
+                            'size': size,
+                        })
+                    except OSError:
                         pass
-        except:
+        except OSError:
             pass
         
         return dict(files_by_type)
@@ -984,39 +1006,53 @@ class FileManager:
             })
         
         try:
-            items = list(self.current_dir.iterdir())
+            # Use os.scandir() for efficient directory listing - avoids extra
+            # stat() calls on Linux by using d_type from readdir.
+            dir_entries = []
+            file_entries = []
+            with os.scandir(self.current_dir) as scanner:
+                for entry in scanner:
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=True)
+                    except OSError:
+                        continue
+                    if is_dir:
+                        dir_entries.append((entry.name, Path(entry.path)))
+                    elif entry.is_file(follow_symlinks=True):
+                        try:
+                            size = entry.stat(follow_symlinks=True).st_size
+                        except OSError:
+                            size = 0
+                        file_entries.append((entry.name, Path(entry.path), size))
             
-            # Separate and sort directories and files
-            dirs = sorted([e for e in items if e.is_dir()], key=lambda x: x.name.lower())
-            files = sorted([e for e in items if e.is_file()], key=lambda x: x.name.lower())
+            dir_entries.sort(key=lambda x: x[0].lower())
+            file_entries.sort(key=lambda x: x[0].lower())
             
-            # Add directories
-            for d in dirs:
+            # Add directories - defer permissions to draw time
+            for name, path in dir_entries:
                 self.entries.append({
-                    'name': d.name,
-                    'path': d,
+                    'name': name,
+                    'path': path,
                     'is_dir': True,
                     'size': 0,
-                    'perms': self.get_permissions_string(d)
+                    'perms': ''
                 })
             
-            # Add files
-            for f in files:
-                try:
-                    size = f.stat().st_size
-                except:
-                    size = 0
-                
+            # Add files - defer permissions to draw time
+            for name, path, size in file_entries:
                 self.entries.append({
-                    'name': f.name,
-                    'path': f,
+                    'name': name,
+                    'path': path,
                     'is_dir': False,
                     'size': size,
-                    'perms': self.get_permissions_string(f)
+                    'perms': ''
                 })
         
         except PermissionError:
             self.message = "Permission denied reading directory"
+            self.message_color = curses.COLOR_RED
+        except OSError as e:
+            self.message = f"Error reading directory: {e}"
             self.message_color = curses.COLOR_RED
         
         # Reset selection if out of bounds
@@ -1103,11 +1139,12 @@ class FileManager:
             # Quick check - skip if git is not available
             if not shutil.which('git'):
                 return
-            # Combine rev-parse checks into one call
+            cwd = str(self.current_dir)
+            # Quick check if inside a git repo - fast, just walks parents for .git
             result = subprocess.run(
                 ['git', 'rev-parse', '--is-inside-work-tree', '--show-toplevel'],
-                capture_output=True, text=True, timeout=2,
-                cwd=str(self.current_dir)
+                capture_output=True, text=True, timeout=1,
+                cwd=cwd
             )
             if result.returncode != 0:
                 return
@@ -1116,18 +1153,21 @@ class FileManager:
             if len(lines_out) >= 2 and lines_out[1].strip():
                 self._git_root = Path(lines_out[1].strip())
 
-            # Get branch and status in two calls
+            # Get branch - fast
             branch = subprocess.run(
                 ['git', 'branch', '--show-current'],
-                capture_output=True, text=True, timeout=2,
-                cwd=str(self.current_dir)
+                capture_output=True, text=True, timeout=1,
+                cwd=cwd
             )
             self._git_branch = branch.stdout.strip() or 'HEAD'
 
+            # git status can be VERY slow on large repos - use --no-optional-locks
+            # and limit untracked file scanning
             status = subprocess.run(
-                ['git', 'status', '--porcelain=v1'],
-                capture_output=True, text=True, timeout=2,
-                cwd=str(self.current_dir)
+                ['git', '--no-optional-locks', 'status', '--porcelain=v1',
+                 '--untracked-files=normal', '--ignore-submodules=dirty'],
+                capture_output=True, text=True, timeout=1,
+                cwd=cwd
             )
             self._git_is_dirty = bool(status.stdout.strip())
 
@@ -1574,7 +1614,11 @@ class FileManager:
 
             icon = self.get_file_icon(entry) or ' '
             size_str = '<DIR>' if entry['is_dir'] else self.get_size_string(entry['size']).strip()
+            # Lazy-load permissions only for visible entries
             perms = entry.get('perms', '')
+            if not perms and entry['name'] != '..':
+                perms = self.get_permissions_string(entry['path'])
+                entry['perms'] = perms
             marker = f" {check_icon} " if is_marked else "   "
 
             git_indicator = ' '
@@ -2165,54 +2209,69 @@ class FileManager:
             }
 
             if selected_entry['is_dir']:
-                file_count = 0
-                total_size = 0
-                type_sizes = defaultdict(int)
-                type_counts = defaultdict(int)
-                capped = False
-                try:
-                    for root, dirs, files in os.walk(path):
-                        # Limit directory depth to avoid deep scans
-                        depth = root.count(os.sep) - str(path).count(os.sep)
-                        if depth >= 2:
-                            dirs.clear()
-                            continue
-                        for file_name in files:
-                            full_path = Path(root) / file_name
-                            try:
-                                size = full_path.stat().st_size
-                            except Exception:
-                                size = 0
-                            category = self.get_file_type_category(full_path)
-                            file_count += 1
-                            total_size += size
-                            type_sizes[category] += size
-                            type_counts[category] += 1
-                            if file_count >= 100:
+                # Skip expensive scan for '..' entries - just show basic info
+                if selected_entry['name'] == '..':
+                    preview_data = {
+                        'type': 'directory',
+                        'path': path,
+                        'analysis': {
+                            'total_files': 0,
+                            'total_size': 0,
+                            'file_types': {},
+                            'file_type_sizes': {},
+                            'partial': True,
+                        },
+                    }
+                else:
+                    file_count = 0
+                    total_size = 0
+                    type_sizes = defaultdict(int)
+                    type_counts = defaultdict(int)
+                    capped = False
+                    try:
+                        _scan_start = time.monotonic()
+                        base_sep = str(path).count(os.sep)
+                        for root, dirs, files in os.walk(path):
+                            # Time guard - abort after 0.5s
+                            if time.monotonic() - _scan_start > 0.5:
                                 capped = True
                                 break
-                        if capped:
-                            break
-                except Exception:
-                    pass
+                            depth = root.count(os.sep) - base_sep
+                            if depth >= 2:
+                                dirs.clear()
+                                continue
+                            for file_name in files:
+                                full_path = os.path.join(root, file_name)
+                                try:
+                                    size = os.stat(full_path).st_size
+                                except OSError:
+                                    size = 0
+                                category = self.get_file_type_category(Path(full_path))
+                                file_count += 1
+                                total_size += size
+                                type_sizes[category] += size
+                                type_counts[category] += 1
+                                if file_count >= 100:
+                                    capped = True
+                                    break
+                            if capped:
+                                break
+                    except OSError:
+                        pass
 
-                if capped:
                     analysis = {
                         'total_files': file_count,
                         'total_size': total_size,
                         'file_types': dict(type_counts),
                         'file_type_sizes': dict(type_sizes),
-                        'partial': True,
+                        'partial': capped,
                     }
-                else:
-                    analysis = self.analyze_directory_contents(path)
-                    analysis['partial'] = False
 
-                preview_data = {
-                    'type': 'directory',
-                    'path': path,
-                    'analysis': analysis,
-                }
+                    preview_data = {
+                        'type': 'directory',
+                        'path': path,
+                        'analysis': analysis,
+                    }
 
             elif self.is_text_file(path):
                 raw = b''
