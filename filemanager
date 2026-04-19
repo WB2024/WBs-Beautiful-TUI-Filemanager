@@ -45,26 +45,26 @@ ICONS = {
     'file_code':      '',  # \ue60e  (code file)
     'file_image':     '',  # \uf1c5
     'file_audio':     '',  # \uf1c7  (nf-fa-file_audio_o)
-    'file_video':     '󰎁',  # \uf03a1 (nf-md-file_video)
+    'file_video':     '',  # \uf1c8 (fa-file-video-o)
     'file_archive':   '',  # \uf1c6
     'file_pdf':       '',  # \uf1c1
     'file_data':      '',  # \ue60b  (database)
     'file_config':    '',  # \ue615  (gear)
     'file_lock':      '',  # \uf023
-    'file_iso':       '󰗮',  # \uf15ee disc
+    'file_iso':       '',  # \uf0a0 (fa-hdd-o)
 
     # Status / UI icons
     'git':            '',  # \ue702
     'home':           '',  # \uf015
     'search':         '',  # \uf002
     'bookmark':       '',  # \uf02e
-    'clipboard':      '󰅌',  # \uf014c
+    'clipboard':      '',  # \uf24d (fa-clone)
     'check':          '',  # \uf00c
     'cross':          '',  # \uf00d
     'arrow_right':    '',  # \uf054
     'arrow_down':     '',  # \uf078
-    'dot':            '',  # \uf444  (circle-small)
-    'dot_filled':     '',  # \uf444
+    'dot':            '',  # \uf111 (fa-circle)
+    'dot_filled':     '',  # \uf111 (fa-circle)
     'star':           '',  # \uf005
     'warning':        '',  # \uf071
     'info':           '',  # \uf05a
@@ -77,12 +77,12 @@ ICONS = {
     'paste':          '',  # \uf0ea
     'edit':           '',  # \uf044
     'terminal':       '',  # \uf120
-    'music':          '󰝚',  # \uf0750
-    'video':          '󰕧',  # \uf0567
-    'image':          '󰋩',  # \uf02e9
-    'package':        '',  # \uf466
-    'trophy':         '',  # \uf091
-    'balance':        '󰖐',  # \uf0590
+    'music':          '',  # \uf001 (fa-music)
+    'video':          '',  # \uf008 (fa-film)
+    'image':          '',  # \uf03e (fa-image)
+    'package':        '',  # \uf187 (fa-archive)
+    'trophy':         '',  # \uf091 (fa-trophy)
+    'balance':        '',  # \uf24e (fa-balance-scale)
 
     # Extra aliases
     'folder':         '',  # alias for folder_closed
