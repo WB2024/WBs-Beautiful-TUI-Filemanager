@@ -2902,16 +2902,16 @@ class FileManager:
             elif key in [ord('\n'), curses.KEY_ENTER, 10, 13]:
                 selected_item = menu_items[selected]
                 
-                if selected_item == "Cancel":
+                if "Cancel" in selected_item:
                     break
-                elif selected_item == "Add current directory as bookmark":
+                elif "Add current directory as bookmark" in selected_item:
                     name = self.get_text_input("Enter bookmark name: ")
                     if name:
                         self.config.add_bookmark(name, self.current_dir)
                         self.message = f"Bookmark '{name}' added"
                         self.message_color = curses.COLOR_GREEN
                     break
-                elif selected_item == "Remove a bookmark":
+                elif "Remove a bookmark" in selected_item:
                     if bookmarks:
                         name = self.get_text_input("Enter bookmark name to remove: ")
                         if name and name in bookmarks:
