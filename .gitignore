@@ -140,3 +140,6 @@ Thumbs.db
 *.tmp
 *.bak
 *.backup
+
+# GitHub agent definitions
+.github/agents/*.agent.md

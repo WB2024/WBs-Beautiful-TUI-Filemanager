@@ -13,6 +13,12 @@ import curses
 import json
 import signal
 import time
+import base64
+import struct
+import fcntl
+import termios
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from collections import defaultdict
 import mimetypes
@@ -118,6 +124,248 @@ ICONS = {
     # Breadcrumb
     'breadcrumb_sep': '',  # \ue0b1
 }
+
+
+@dataclass
+class KittyCapabilities:
+    has_graphics: bool
+    has_true_color: bool
+    has_styled_underlines: bool
+    cell_width_px: int
+    cell_height_px: int
+    is_kitty: bool
+
+
+def detect_kitty():
+    """Detect Kitty and related terminal capabilities."""
+    try:
+        term_program = os.environ.get('TERM_PROGRAM', '')
+        term = os.environ.get('TERM', '')
+        kitty_window_id = os.environ.get('KITTY_WINDOW_ID')
+        ssh_tty = os.environ.get('SSH_TTY')
+        colorterm = os.environ.get('COLORTERM', '')
+
+        is_kitty = (
+            term_program == 'kitty'
+            or 'kitty' in term.lower()
+            or bool(kitty_window_id)
+        )
+
+        has_true_color = colorterm.lower() == 'truecolor'
+        has_graphics = is_kitty and not bool(ssh_tty)
+        has_styled_underlines = is_kitty
+
+        cell_width_px = 0
+        cell_height_px = 0
+
+        try:
+            winsz = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b'\x00' * 8)
+            rows, cols, xpixel, ypixel = struct.unpack('HHHH', winsz)
+            if cols > 0 and xpixel > 0:
+                cell_width_px = xpixel // cols
+            if rows > 0 and ypixel > 0:
+                cell_height_px = ypixel // rows
+        except Exception:
+            pass
+
+        return KittyCapabilities(
+            has_graphics=has_graphics,
+            has_true_color=has_true_color,
+            has_styled_underlines=has_styled_underlines,
+            cell_width_px=cell_width_px,
+            cell_height_px=cell_height_px,
+            is_kitty=is_kitty,
+        )
+    except Exception:
+        return KittyCapabilities(
+            has_graphics=False,
+            has_true_color=False,
+            has_styled_underlines=False,
+            cell_width_px=0,
+            cell_height_px=0,
+            is_kitty=False,
+        )
+
+
+def tc_fg(r, g, b):
+    return f"\x1b[38;2;{r};{g};{b}m"
+
+
+def tc_bg(r, g, b):
+    return f"\x1b[48;2;{r};{g};{b}m"
+
+
+def tc_reset():
+    return "\x1b[0m"
+
+
+def tc_underline_curly(r, g, b):
+    return f"\x1b[4:3m\x1b[58;2;{r};{g};{b}m"
+
+
+def tc_underline_off():
+    return "\x1b[4:0m\x1b[59m"
+
+
+def kitty_send_image(path, x, y, cols, rows, image_id=0):
+    """Transmit and display a local image file via Kitty graphics protocol."""
+    try:
+        abs_path = os.path.abspath(path)
+        payload = base64.b64encode(abs_path.encode('utf-8')).decode('ascii')
+        chunk_size = 4096
+
+        try:
+            sys.stdout.write(f"\x1b[{y+1};{x+1}H")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+        for i in range(0, len(payload), chunk_size):
+            chunk = payload[i:i + chunk_size]
+            more = 1 if i + chunk_size < len(payload) else 0
+            if i == 0:
+                seq = (
+                    f"\x1b_Ga=T,t=f,f=100,c={cols},r={rows},C=1,z=-1,"
+                    f"i={image_id},m={more};{chunk}\x1b\\"
+                )
+            else:
+                seq = f"\x1b_Gm={more};{chunk}\x1b\\"
+            try:
+                sys.stdout.buffer.write(seq.encode('utf-8'))
+                sys.stdout.flush()
+            except (BrokenPipeError, OSError):
+                return False
+
+        return True
+    except Exception:
+        return False
+
+
+def kitty_delete_images(image_id=None):
+    """Delete Kitty images by id or delete all when id is None."""
+    try:
+        if image_id is None:
+            seq = "\x1b_Ga=d,d=a\x1b\\"
+        else:
+            seq = f"\x1b_Ga=d,d=i,i={image_id}\x1b\\"
+        sys.stdout.buffer.write(seq.encode('utf-8'))
+        sys.stdout.flush()
+        return True
+    except (BrokenPipeError, OSError):
+        return False
+    except Exception:
+        return False
+
+
+def kitty_clear_image_area(x, y, cols, rows):
+    """Clear a rectangular image area in Kitty, with safe fallback behavior."""
+    try:
+        # Kitty delete command supports per-cell intersection; clear the rectangle
+        # by issuing cell deletes over the requested area.
+        for yy in range(y, y + rows):
+            for xx in range(x, x + cols):
+                seq = f"\x1b_Ga=d,d=p,x={xx+1},y={yy+1}\x1b\\"
+                sys.stdout.buffer.write(seq.encode('utf-8'))
+        sys.stdout.flush()
+        return True
+    except (BrokenPipeError, OSError):
+        return False
+    except Exception:
+        return False
+
+
+THEME = {
+    # Backgrounds
+    'bg_base':              (15, 15, 23),
+    'bg_surface':           (24, 24, 37),
+    'bg_overlay':           (30, 30, 46),
+    'bg_muted':             (40, 40, 64),
+    'bg_selection':         (42, 42, 74),
+    'bg_selection_accent':  (26, 58, 92),
+
+    # Accents
+    'accent_primary':       (86, 182, 194),
+    'accent_secondary':     (198, 120, 221),
+    'accent_warm':          (229, 192, 123),
+    'accent_rose':          (224, 108, 117),
+    'accent_green':         (152, 195, 121),
+    'accent_blue':          (97, 175, 239),
+    'accent_orange':        (209, 154, 102),
+
+    # Text
+    'text_primary':         (206, 212, 224),
+    'text_secondary':       (108, 112, 134),
+    'text_dim':             (69, 71, 90),
+
+    # Borders
+    'border_subtle':        (42, 42, 62),
+    'border_accent':        (58, 74, 106),
+
+    # Shadow
+    'shadow':               (8, 8, 12),
+
+    # Header gradient
+    'gradient_header_1':    (26, 42, 74),
+    'gradient_header_2':    (26, 58, 92),
+    'gradient_header_3':    (26, 74, 110),
+
+    # Selection gradient
+    'gradient_sel_1':       (26, 58, 92),
+    'gradient_sel_2':       (42, 58, 74),
+
+    # Marks
+    'mark_bg':              (42, 37, 16),
+
+    # Quality colors
+    'quality_exceptional':  (152, 195, 121),
+    'quality_excellent':    (130, 220, 130),
+    'quality_good':         (97, 175, 239),
+    'quality_fair':         (229, 192, 123),
+    'quality_poor':         (224, 108, 117),
+}
+
+
+PALETTE_COMMANDS = [
+    {'icon': ICONS['copy'], 'label': 'Copy marked files', 'key': 'c', 'action': 'copy'},
+    {'icon': ICONS['cut'], 'label': 'Cut marked files', 'key': 'x', 'action': 'cut'},
+    {'icon': ICONS['paste'], 'label': 'Paste files', 'key': 'v', 'action': 'paste'},
+    {'icon': ICONS['trash'], 'label': 'Delete', 'key': 'd', 'action': 'delete'},
+    {'icon': ICONS['edit'], 'label': 'New file or folder', 'key': 'n', 'action': 'new'},
+    {'icon': ICONS['edit'], 'label': 'Rename', 'key': 'R', 'action': 'rename'},
+    {'icon': ICONS['bookmark'], 'label': 'Bookmarks', 'key': 'b', 'action': 'bookmarks'},
+    {'icon': ICONS['wrench'], 'label': 'Tools menu', 'key': 't', 'action': 'tools'},
+    {'icon': ICONS['lock'], 'label': 'Fix permissions', 'key': 'p', 'action': 'permissions'},
+    {'icon': ICONS['search'], 'label': 'Find empty folders', 'key': 'f', 'action': 'find_empty'},
+    {'icon': ICONS['file_archive'], 'label': 'Extract archives', 'key': 'e', 'action': 'extract'},
+    {'icon': ICONS['info'], 'label': 'Toggle help', 'key': '?', 'action': 'help'},
+    {'icon': ICONS['cross'], 'label': 'Quit', 'key': 'q', 'action': 'quit'},
+]
+
+
+def tc_addstr(stdscr, y, x, text, fg=None, bg=None, bold=False, dim=False):
+    """Write text with true-color via escape sequences, positioned with curses.
+    Falls back to curses if true color not available."""
+    try:
+        seq = ""
+        if fg:
+            seq += tc_fg(*fg)
+        if bg:
+            seq += tc_bg(*bg)
+        if bold:
+            seq += "\x1b[1m"
+        if dim:
+            seq += "\x1b[2m"
+        seq += text + tc_reset()
+        sys.stdout.write(f"\x1b[{y+1};{x+1}H{seq}")
+        sys.stdout.flush()
+    except Exception:
+        try:
+            attr = curses.A_BOLD if bold else 0
+            if dim:
+                attr |= curses.A_DIM
+            stdscr.addstr(y, x, text, attr)
+        except curses.error:
+            pass
 
 
 def _setup_256_colors():
@@ -385,6 +633,27 @@ class FileManager:
             _setup_256_colors()
         else:
             _setup_basic_colors()
+
+        self.kitty = detect_kitty()
+        self.use_true_color = self.kitty.has_true_color
+
+        # Panel layout state
+        self.show_sidebar = True
+        self.show_preview = True
+        self.active_panel = 'files'  # 'sidebar', 'files', or 'preview'
+        self.sidebar_scroll = 0
+        self.tree_expanded = {str(Path.home()): True}  # Start with home expanded
+        self.sidebar_items = []  # List of (type, data, indent_level) for rendering
+        self.sidebar_selected = 0  # Currently highlighted sidebar item
+        self.preview_scroll = 0
+        self.preview_cache = {'path': None, 'content': None, 'image_id': 0}
+
+        # Git info (cached per directory)
+        self._git_branch = None
+        self._git_is_dirty = False
+        self._git_status = {}
+        self._git_root = None
+        self._git_dir_path = None
         
         # Hide cursor
         curses.curs_set(0)
@@ -633,290 +902,1539 @@ class FileManager:
         # Reset selection if out of bounds
         if self.selected_index >= len(self.entries):
             self.selected_index = max(0, len(self.entries) - 1)
-    
-    def draw_header(self):
-        """Draw header with gradient title bar and breadcrumb path"""
-        height, width = self.stdscr.getmaxyx()
-        
-        if self.has_256_colors:
-            # ── Gradient title bar ──────────────────────────────────────
-            title_text = f"  {ICONS['folder_open']}  FILE MANAGER  "
-            
-            # Row 0: Main title with gradient background
-            self.stdscr.attron(curses.color_pair(15) | curses.A_BOLD)
-            self.stdscr.addstr(0, 0, " " * width)
-            self.stdscr.attroff(curses.color_pair(15) | curses.A_BOLD)
-            
-            # Center the title
-            title_x = (width - len(title_text)) // 2
-            if title_x > 0:
-                self.stdscr.addstr(0, title_x, title_text, curses.color_pair(17) | curses.A_BOLD)
-            
-            # ── Breadcrumb path bar (row 1) ────────────────────────────
-            # Build breadcrumb from path parts
-            parts = self.current_dir.parts
-            breadcrumb = f" {ICONS['home']} "
-            
-            for i, part in enumerate(parts):
-                if part == '/':
-                    continue
-                if i > 0:
-                    breadcrumb += f" {ICONS['breadcrumb_sep']} "
-                breadcrumb += part
-            
-            if len(breadcrumb) > width - 4:
-                # Truncate from the left, keeping the last segments
-                breadcrumb = f" {ICONS['home']} … {ICONS['breadcrumb_sep']} " + str(self.current_dir.name)
-            
-            # File count indicator on the right
-            file_count = len(self.entries)
-            dir_count = sum(1 for e in self.entries if e['is_dir'] and e['name'] != '..')
-            regular_count = file_count - dir_count - (1 if self.entries and self.entries[0]['name'] == '..' else 0)
-            count_str = f" {ICONS['folder_closed']} {dir_count}  {ICONS['file_default']} {regular_count} "
-            
-            # Path on left, counts on right
-            avail = width - len(count_str) - 1
-            self.stdscr.addstr(1, 0, " " * width, curses.color_pair(14))
-            self.stdscr.addstr(1, 1, breadcrumb[:avail], curses.color_pair(19) | curses.A_BOLD)
-            self.stdscr.addstr(1, width - len(count_str) - 1, count_str, curses.color_pair(14))
-            
-            # ── Column headers (row 2) ─────────────────────────────────
-            col_header = f"  {'NAME':<{width - 32}}{'PERMS':<14}{'SIZE':>8}  "
-            self.stdscr.addstr(2, 0, col_header[:width], curses.color_pair(90))
-        else:
-            # Fallback for basic terminals
-            title = f" {ICONS['folder_open']}  FILE MANAGER "
-            self.stdscr.attron(curses.color_pair(7) | curses.A_BOLD)
-            self.stdscr.addstr(0, 0, title.center(width)[:width])
-            self.stdscr.attroff(curses.color_pair(7) | curses.A_BOLD)
-            
-            path_str = f" {ICONS['home']} {self.current_dir}"
-            if len(path_str) > width - 2:
-                path_str = f" {ICONS['home']} …" + str(self.current_dir)[-(width-8):]
-            self.stdscr.addstr(1, 1, path_str[:width-2], curses.color_pair(11) | curses.A_BOLD)
-            
-            self.stdscr.addstr(2, 0, "─" * width)
-    
-    def draw_footer(self):
-        """Draw footer with status bar and help"""
-        height, width = self.stdscr.getmaxyx()
-        
-        if self.has_256_colors:
-            # ── Status separator (thin line) ───────────────────────────
-            sep_line = ICONS['box_h'] * width
+
+        self._detect_git_info()
+        self._build_tree()
+
+    def _build_tree(self):
+        """Build a flat, renderable directory tree rooted at the user's home."""
+        home = Path.home().resolve()
+        max_depth = 5
+        tree_items = []
+
+        def list_subdirs(path):
             try:
-                self.stdscr.addstr(height - 5, 0, sep_line[:width], curses.color_pair(14))
-            except curses.error:
-                pass
-            
-            # ── Status indicators row ──────────────────────────────────
-            status_parts = []
-            
-            # Selection status
-            if self.selected_files:
-                sel_count = len(self.selected_files)
-                status_parts.append((f" {ICONS['check']} {sel_count} marked ", curses.color_pair(18) | curses.A_BOLD))
-            
-            # Clipboard status
-            if self.clipboard:
-                clip_count = len(self.clipboard)
-                op_icon = ICONS['copy'] if self.clipboard_operation == 'copy' else ICONS['cut']
-                clip_op = "copied" if self.clipboard_operation == 'copy' else "cut"
-                status_parts.append((f" {op_icon} {clip_count} {clip_op} ", curses.color_pair(19)))
-            
-            # Draw status parts
-            x_pos = 1
-            for text, attr in status_parts:
-                try:
-                    self.stdscr.addstr(height - 4, x_pos, text[:width - x_pos - 1], attr)
-                    x_pos += len(text) + 1
-                except curses.error:
-                    pass
-            
-            # ── Help text row(s) ───────────────────────────────────────
-            if self.show_help:
-                help_lines = [
-                    f" ↑↓ Navigate  ⏎ Open  ⌫ Up  h Home  r Root  ? Help",
-                    f" ␣ Mark  a All  u Unmark  o Ops  t Tools  b Bookmarks",
-                    f" c Copy  x Cut  v Paste  d Del  n New  R Rename  q Quit",
+                children = [
+                    p for p in path.iterdir()
+                    if p.is_dir() and not p.name.startswith('.')
                 ]
-                for i, line in enumerate(help_lines):
-                    row = height - 3 + i
-                    if row < height - 1:
-                        try:
-                            self.stdscr.addstr(row, 0, " " * width, curses.color_pair(14))
-                            self.stdscr.addstr(row, 0, line[:width-1], curses.color_pair(14))
-                        except curses.error:
-                            pass
+                return sorted(children, key=lambda d: d.name.lower())
+            except (PermissionError, OSError):
+                return []
+
+        def walk(path, depth, parent_has_more, is_last):
+            path_key = str(path.resolve())
+            is_expanded = bool(self.tree_expanded.get(path_key, False))
+
+            prefix_parts = []
+            for has_more in parent_has_more:
+                prefix_parts.append('│ ' if has_more else '  ')
+            if depth == 0:
+                tree_prefix = ''
             else:
-                help_line = f" ? Help  ␣ Mark  o Ops  t Tools  V Video  I Image  d Del  q Quit"
-                try:
-                    self.stdscr.addstr(height - 3, 0, " " * width, curses.color_pair(14))
-                    self.stdscr.addstr(height - 3, 0, help_line[:width-1], curses.color_pair(14))
-                except curses.error:
-                    pass
-            
-            # ── Message row ────────────────────────────────────────────
-            if self.message:
-                if self.message_color == curses.COLOR_GREEN:
-                    icon, color = ICONS['check'], curses.color_pair(8)
-                elif self.message_color == curses.COLOR_RED:
-                    icon, color = ICONS['cross'], curses.color_pair(9)
-                else:
-                    icon, color = ICONS['warning'], curses.color_pair(10)
-                msg = f" {icon} {self.message}"
-                try:
-                    self.stdscr.addstr(height - 1, 0, msg[:width-1], color | curses.A_BOLD)
-                except curses.error:
-                    pass
-        else:
-            # ── Fallback basic footer ──────────────────────────────────
-            self.stdscr.addstr(height - 5, 0, "─" * width)
-            
-            if self.selected_files:
-                sel_count = len(self.selected_files)
-                sel_info = f" {sel_count} file(s) marked "
-                self.stdscr.addstr(height - 5, width - len(sel_info) - 2, sel_info, curses.color_pair(10) | curses.A_BOLD)
-            
-            if self.clipboard:
-                clip_count = len(self.clipboard)
-                clip_op = "copy" if self.clipboard_operation == 'copy' else "cut"
-                clip_info = f" Clipboard: {clip_count} ({clip_op}) "
-                self.stdscr.addstr(height - 5, 2, clip_info, curses.color_pair(11))
-            
-            if self.show_help:
-                help_lines = [
-                    "↑/↓: Navigate  Enter: Open  Backspace: Up  h: Home  r: Root  ?: Help",
-                    "Space: Mark  a: Mark All  u: Unmark  o: Operations  t: Tools",
-                    "c: Copy  x: Cut  v: Paste  d: Delete  n: New  R: Rename  q: Quit",
-                    "V: Play Video  I: View Image  b: Bookmarks"
-                ]
-            else:
-                help_lines = [
-                    "?: Help  Space: Mark  o: Ops  t: Tools  V: Video  I: Image  d: Del"
-                ]
-            
-            for i, line in enumerate(help_lines):
-                if height - 4 + i < height:
-                    self.stdscr.addstr(height - 4 + i, 1, line[:width-2], curses.color_pair(11))
-            
-            if self.message:
-                color = curses.color_pair(8) if self.message_color == curses.COLOR_GREEN else curses.color_pair(9)
-                msg = self.message[:width-2]
-                self.stdscr.addstr(height - 1, 1, msg, color | curses.A_BOLD)
-    
-    def draw_entries(self):
-        """Draw file/directory entries with refined layout"""
+                tree_prefix = ''.join(prefix_parts) + ('└─' if is_last else '├─')
+
+            item = {
+                'type': 'dir',
+                'path': path,
+                'name': f"{path.name}/" if depth > 0 else f"{home.name}/",
+                'depth': depth,
+                'is_expanded': is_expanded,
+                'is_last': is_last,
+                'tree_prefix': tree_prefix,
+            }
+            tree_items.append(item)
+
+            if not is_expanded or depth >= max_depth:
+                return
+
+            children = list_subdirs(path)
+            child_count = len(children)
+            for idx, child in enumerate(children):
+                child_is_last = (idx == child_count - 1)
+                walk(child, depth + 1, parent_has_more + [not child_is_last], child_is_last)
+
+        walk(home, 0, [], True)
+        self._tree_items = tree_items
+
+    def _detect_git_info(self):
+        """Detect git branch and dirty status for current directory. Cached per directory."""
+        if self._git_dir_path == str(self.current_dir):
+            return
+        self._git_dir_path = str(self.current_dir)
+        self._git_branch = None
+        self._git_is_dirty = False
+        self._git_status = {}
+        self._git_root = None
+        try:
+            result = subprocess.run(
+                ['git', 'rev-parse', '--is-inside-work-tree'],
+                capture_output=True, text=True, timeout=2,
+                cwd=str(self.current_dir)
+            )
+            if result.returncode == 0:
+                branch = subprocess.run(
+                    ['git', 'branch', '--show-current'],
+                    capture_output=True, text=True, timeout=2,
+                    cwd=str(self.current_dir)
+                )
+                self._git_branch = branch.stdout.strip() or 'HEAD'
+
+                root = subprocess.run(
+                    ['git', 'rev-parse', '--show-toplevel'],
+                    capture_output=True, text=True, timeout=2,
+                    cwd=str(self.current_dir)
+                )
+                if root.returncode == 0 and root.stdout.strip():
+                    self._git_root = Path(root.stdout.strip())
+
+                status = subprocess.run(
+                    ['git', 'status', '--porcelain=v1'],
+                    capture_output=True, text=True, timeout=2,
+                    cwd=str(self.current_dir)
+                )
+                self._git_is_dirty = bool(status.stdout.strip())
+
+                for line in status.stdout.splitlines():
+                    if len(line) < 3:
+                        continue
+
+                    xy = line[:2]
+                    path_part = line[3:].strip()
+                    if not path_part or xy == '!!':
+                        continue
+
+                    # Rename/copy entries use "old -> new"; track the destination path.
+                    if ' -> ' in path_part:
+                        path_part = path_part.split(' -> ', 1)[1].strip()
+
+                    # Handle quoted porcelain paths with escaped quotes/backslashes.
+                    if len(path_part) >= 2 and path_part[0] == '"' and path_part[-1] == '"':
+                        path_part = path_part[1:-1].replace('\\"', '"').replace('\\\\', '\\')
+
+                    path_part = path_part.replace('\\', '/').lstrip('./')
+                    if not path_part:
+                        continue
+
+                    if xy[0] == '?' or xy[1] == '?':
+                        mapped = 'untracked'
+                    elif xy[0] == 'M' or xy[1] == 'M':
+                        mapped = 'modified'
+                    elif xy[0] == 'A':
+                        mapped = 'added'
+                    elif xy[0] == 'D' or xy[1] == 'D':
+                        mapped = 'deleted'
+                    elif xy[0] == 'R' or xy[1] == 'R':
+                        mapped = 'renamed'
+                    else:
+                        continue
+
+                    self._git_status[path_part] = mapped
+        except Exception:
+            pass
+
+    def _calc_layout(self):
+        """Calculate panel dimensions based on terminal size and visibility toggles."""
         height, width = self.stdscr.getmaxyx()
-        
-        # Calculate visible area
-        visible_start = 3
-        visible_end = height - 5
-        visible_count = visible_end - visible_start
-        
-        # Adjust scroll offset
+
+        compact_mode = height < 20
+        header_rows = 2 if compact_mode else 3
+        footer_rows = 1 if compact_mode else 3
+        content_height = max(1, height - header_rows - footer_rows)
+
+        # Determine panel widths based on terminal width and toggles
+        sidebar_width = 0
+        preview_width = 0
+
+        if width >= 100:
+            # Full 3-panel layout.
+            if self.show_sidebar:
+                sidebar_width = min(30, max(18, width // 5))
+            if self.show_preview:
+                preview_width = min(45, max(25, int(width * 0.30)))
+        elif width >= 60:
+            # Mid layout: only one secondary panel fits (sidebar OR preview).
+            preferred_panel = None
+            if self.show_sidebar and not self.show_preview:
+                preferred_panel = 'sidebar'
+            elif self.show_preview and not self.show_sidebar:
+                preferred_panel = 'preview'
+            elif self.show_sidebar and self.show_preview:
+                preferred_panel = 'sidebar' if self.active_panel == 'sidebar' else 'preview'
+
+            if preferred_panel == 'sidebar':
+                sidebar_width = min(30, max(18, width // 4))
+            elif preferred_panel == 'preview':
+                preview_width = min(45, max(25, int(width * 0.35)))
+
+        # File list gets remaining space (minimum 30 cols)
+        file_list_width = width - sidebar_width - preview_width
+        if width >= 60 and file_list_width < 30:
+            # Not enough space - hide panels
+            if preview_width > 0 and sidebar_width > 0:
+                preview_width = 0
+                file_list_width = width - sidebar_width
+            if file_list_width < 30:
+                sidebar_width = 0
+                preview_width = 0
+                file_list_width = width
+        elif width < 60:
+            sidebar_width = 0
+            preview_width = 0
+            file_list_width = width
+
+        return {
+            'width': width,
+            'height': height,
+            'compact_mode': compact_mode,
+            'header_rows': header_rows,
+            'footer_rows': footer_rows,
+            'content_height': content_height,
+            'content_start_y': header_rows,
+            'sidebar_x': 0,
+            'sidebar_width': sidebar_width,
+            'files_x': sidebar_width,
+            'files_width': file_list_width,
+            'preview_x': sidebar_width + file_list_width,
+            'preview_width': preview_width,
+            'footer_y': height - footer_rows,
+        }
+    
+    def draw_header(self, layout):
+        """Draw the 3-row header: title/breadcrumb, column headers, separator."""
+        width = layout['width']
+        files_x = layout['files_x']
+        files_w = layout['files_width']
+        preview_x = layout['preview_x']
+        preview_w = layout['preview_width']
+
+        dir_count = sum(1 for e in self.entries if e['is_dir'] and e['name'] != '..')
+        file_count = sum(1 for e in self.entries if not e['is_dir'])
+        git_dirty = '*' if self._git_is_dirty else ''
+        git_info = f"{ICONS['git']} {self._git_branch}{git_dirty}" if self._git_branch else ""
+        count_info = f"{ICONS['folder_closed']} {dir_count}  {ICONS['file_default']} {file_count}"
+        right_info = f"{git_info}  {count_info}".strip()
+
+        app_icon = ICONS['folder_open'] or ICONS['folder_closed'] or '*'
+        title = f"  {app_icon} FILE MANAGER"
+
+        home = str(Path.home())
+        cur = str(self.current_dir)
+        if cur.startswith(home):
+            rel = cur[len(home):].strip('/')
+            parts = rel.split('/') if rel else []
+            breadcrumb_parts = ['~'] + [p for p in parts if p]
+        else:
+            breadcrumb_parts = [p for p in self.current_dir.parts if p and p != '/']
+            if self.current_dir.is_absolute():
+                breadcrumb_parts = ['/'] + breadcrumb_parts
+
+        sep = " ▸ "
+        breadcrumb = "  " + sep.join(breadcrumb_parts)
+
+        if layout['header_rows'] == 2:
+            compact_line = breadcrumb[:max(0, width - 1)]
+            if self.use_true_color:
+                tc_addstr(self.stdscr, 0, 0, ' ' * width, bg=THEME['gradient_header_2'])
+                tc_addstr(self.stdscr, 0, 0, compact_line, fg=THEME['text_primary'], bg=THEME['gradient_header_2'], bold=True)
+                tc_addstr(self.stdscr, 1, 0, '─' * width, fg=THEME['border_subtle'])
+            else:
+                self.stdscr.addstr(0, 0, ' ' * width, curses.color_pair(15))
+                self.stdscr.addstr(0, 0, compact_line, curses.color_pair(17) | curses.A_BOLD)
+                self.stdscr.addstr(1, 0, ('─' * width)[:width], curses.color_pair(14))
+            return
+
+        # Row 0: title bar + breadcrumb + right-aligned git/counts
+        if self.use_true_color:
+            tc_addstr(self.stdscr, 0, 0, ' ' * width, bg=THEME['gradient_header_2'])
+            tc_addstr(self.stdscr, 0, 0, title[:width], fg=(255, 255, 255), bg=THEME['gradient_header_2'], bold=True)
+
+            right_x = max(0, width - len(right_info) - 1)
+            crumb_start = min(width - 1, len(title) + 1)
+            crumb_space = max(0, right_x - crumb_start - 1)
+            crumb_text = breadcrumb[:crumb_space]
+            tc_addstr(self.stdscr, 0, crumb_start, crumb_text, fg=THEME['text_secondary'], bg=THEME['gradient_header_2'])
+
+            if breadcrumb_parts:
+                prefix = "  " + sep.join(breadcrumb_parts[:-1])
+                if breadcrumb_parts[:-1]:
+                    prefix += sep
+                last_x = crumb_start + min(len(crumb_text), len(prefix))
+                last_seg = breadcrumb_parts[-1][:max(0, crumb_space - len(prefix))]
+                if last_seg:
+                    tc_addstr(self.stdscr, 0, last_x, last_seg, fg=THEME['accent_primary'], bg=THEME['gradient_header_2'], bold=True)
+
+            if right_info:
+                tc_addstr(self.stdscr, 0, right_x, right_info[:width - right_x], fg=THEME['text_primary'], bg=THEME['gradient_header_2'], bold=True)
+        else:
+            self.stdscr.addstr(0, 0, ' ' * width, curses.color_pair(15))
+            self.stdscr.addstr(0, 0, title[:width], curses.color_pair(17) | curses.A_BOLD)
+            right_x = max(0, width - len(right_info) - 1)
+            crumb_start = min(width - 1, len(title) + 1)
+            crumb_space = max(0, right_x - crumb_start - 1)
+            self.stdscr.addstr(0, crumb_start, breadcrumb[:crumb_space], curses.color_pair(14))
+            if right_info:
+                self.stdscr.addstr(0, right_x, right_info[:width - right_x], curses.color_pair(11) | curses.A_BOLD)
+
+        # Row 1: panel-aware column headers
+        if self.use_true_color:
+            tc_addstr(self.stdscr, 1, 0, ' ' * width, bg=THEME['bg_surface'])
+            if files_w > 0:
+                name_w = max(8, files_w - 27)
+                hdr = f"  {'NAME':<{name_w}} {'PERMS':<10} {'SIZE':>10}"
+                tc_addstr(self.stdscr, 1, files_x, hdr[:files_w], fg=THEME['text_dim'], bg=THEME['bg_surface'])
+            if preview_w > 0:
+                pv = 'PREVIEW'
+                pv_x = preview_x + max(0, (preview_w - len(pv)) // 2)
+                tc_addstr(self.stdscr, 1, pv_x, pv[:preview_w], fg=THEME['text_dim'], bg=THEME['bg_surface'])
+        else:
+            self.stdscr.addstr(1, 0, ' ' * width, curses.color_pair(14))
+            if files_w > 0:
+                name_w = max(8, files_w - 27)
+                hdr = f"  {'NAME':<{name_w}} {'PERMS':<10} {'SIZE':>10}"
+                self.stdscr.addstr(1, files_x, hdr[:files_w], curses.color_pair(14))
+            if preview_w > 0:
+                pv = 'PREVIEW'
+                pv_x = preview_x + max(0, (preview_w - len(pv)) // 2)
+                self.stdscr.addstr(1, pv_x, pv[:preview_w], curses.color_pair(14))
+
+        # Row 2: separator with panel junctions
+        sep_chars = ['─'] * width
+        if layout['sidebar_width'] > 0:
+            bx = layout['sidebar_x'] + layout['sidebar_width']
+            if 0 <= bx < width:
+                sep_chars[bx] = '┬'
+        if layout['preview_width'] > 0:
+            bx = layout['preview_x']
+            if 0 <= bx < width:
+                sep_chars[bx] = '┬'
+        sep_line = ''.join(sep_chars)
+
+        if self.use_true_color:
+            tc_addstr(self.stdscr, 2, 0, sep_line, fg=THEME['border_subtle'])
+        else:
+            self.stdscr.addstr(2, 0, sep_line, curses.color_pair(14))
+    
+    def draw_footer(self, layout):
+        """Draw 3-row footer: separator, status, and help hints."""
+        width = layout['width']
+        footer_y = layout['footer_y']
+
+        compact_line = "↑↓ nav  ⏎ open  ␣ mark  / search  : cmd  Tab side  P preview  ? help  q quit"
+        if layout['footer_rows'] == 1:
+            if self.use_true_color:
+                tc_addstr(self.stdscr, footer_y, 0, ' ' * width, bg=THEME['bg_surface'])
+                tc_addstr(self.stdscr, footer_y, 1, compact_line[:max(0, width - 2)], fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            else:
+                self.stdscr.addstr(footer_y, 0, ' ' * width, curses.color_pair(14))
+                self.stdscr.addstr(footer_y, 1, compact_line[:max(0, width - 2)], curses.color_pair(14))
+            return
+
+        # Footer separator row with panel junctions
+        sep_chars = ['─'] * width
+        if layout['sidebar_width'] > 0:
+            bx = layout['sidebar_x'] + layout['sidebar_width']
+            if 0 <= bx < width:
+                sep_chars[bx] = '┴'
+        if layout['preview_width'] > 0:
+            bx = layout['preview_x']
+            if 0 <= bx < width:
+                sep_chars[bx] = '┴'
+        sep_line = ''.join(sep_chars)
+
+        if self.use_true_color:
+            tc_addstr(self.stdscr, footer_y, 0, sep_line, fg=THEME['border_subtle'])
+        else:
+            self.stdscr.addstr(footer_y, 0, sep_line, curses.color_pair(14))
+
+        # Row footer_y+1: left status
+        check_icon = ICONS['check'] or '*'
+        clipboard_icon = ICONS['clipboard'] or '[]'
+        marked = len(self.selected_files)
+        clip_count = len(self.clipboard)
+        clip_mode = self.clipboard_operation or '-'
+        left_status = f" {check_icon} {marked}  {clipboard_icon} {clip_count}:{clip_mode} "
+
+        # Center disk usage mini bar
+        center_status = ""
+        disk_color = THEME['accent_green']
+        try:
+            st = os.statvfs(str(self.current_dir))
+            total = st.f_blocks * st.f_frsize
+            avail = st.f_bavail * st.f_frsize
+            used = max(0, total - avail)
+            pct = (used / total * 100.0) if total else 0.0
+            if pct >= 85:
+                disk_color = THEME['accent_rose']
+            elif pct >= 60:
+                disk_color = THEME['accent_warm']
+
+            filled = min(10, max(0, int(round(pct / 10.0))))
+            bar = '█' * filled + '░' * (10 - filled)
+
+            def fmt_bytes(v):
+                for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                    if v < 1024.0:
+                        if unit == 'B':
+                            return f"{int(v)}{unit}"
+                        return f"{v:.1f}{unit}"
+                    v /= 1024.0
+                return f"{v:.1f}PB"
+
+            center_status = f"💾 {fmt_bytes(used)} / {fmt_bytes(total)} {bar}"
+        except Exception:
+            center_status = "💾 n/a"
+
+        # Right selected perms
+        right_status = ""
+        if self.entries:
+            sel = self.entries[self.selected_index]
+            right_status = f" {sel.get('perms', '')} "
+
+        row_y = footer_y + 1
+        center_x = max(0, (width - len(center_status)) // 2)
+        right_x = max(0, width - len(right_status) - 1)
+
+        if self.use_true_color:
+            tc_addstr(self.stdscr, row_y, 0, ' ' * width, bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, row_y, 1, left_status[:max(0, center_x - 2)], fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, row_y, center_x, center_status[:max(0, right_x - center_x - 1)], fg=disk_color, bg=THEME['bg_surface'], bold=True)
+            if right_status:
+                tc_addstr(self.stdscr, row_y, right_x, right_status[:width - right_x], fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+        else:
+            self.stdscr.addstr(row_y, 0, ' ' * width, curses.color_pair(14))
+            self.stdscr.addstr(row_y, 1, left_status[:max(0, center_x - 2)], curses.color_pair(14))
+            self.stdscr.addstr(row_y, center_x, center_status[:max(0, right_x - center_x - 1)], curses.color_pair(11) | curses.A_BOLD)
+            if right_status:
+                self.stdscr.addstr(row_y, right_x, right_status[:width - right_x], curses.color_pair(14))
+
+        # Row footer_y+2: help hints (keys dim, descriptions secondary)
+        hints = [
+            ('↑↓', 'nav'), ('⏎', 'open'), ('␣', 'mark'), ('/', 'search'),
+            (':', 'cmd'), ('Tab', 'side'), ('P', 'preview'), ('?', 'help'), ('q', 'quit')
+        ]
+
+        if self.use_true_color:
+            tc_addstr(self.stdscr, footer_y + 2, 0, ' ' * width, bg=THEME['bg_surface'])
+            x = 1
+            for key_txt, label_txt in hints:
+                seg = f"{key_txt} {label_txt}  "
+                if x + len(seg) >= width:
+                    break
+                tc_addstr(self.stdscr, footer_y + 2, x, key_txt, fg=THEME['text_dim'], bg=THEME['bg_surface'])
+                tc_addstr(self.stdscr, footer_y + 2, x + len(key_txt) + 1, label_txt, fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+                x += len(seg)
+        else:
+            line = "↑↓ nav  ⏎ open  ␣ mark  / search  : cmd  Tab side  P preview  ? help  q quit"
+            self.stdscr.addstr(footer_y + 2, 0, ' ' * width, curses.color_pair(14))
+            self.stdscr.addstr(footer_y + 2, 1, line[:width - 2], curses.color_pair(14))
+
+    def _get_ext_badge_colors(self, ext):
+        """Get badge fg/bg colors for file extension."""
+        ext = ext.upper().lstrip('.')
+        badges = {
+            'FLAC': (THEME['accent_green'], (42, 74, 42)),
+            'MP3': (THEME['accent_orange'], (74, 58, 42)),
+            'WAV': (THEME['accent_blue'], (42, 58, 92)),
+            'MP4': (THEME['accent_rose'], (74, 42, 42)),
+            'MKV': (THEME['accent_rose'], (74, 42, 42)),
+            'AVI': (THEME['accent_rose'], (74, 42, 42)),
+            'PY': (THEME['accent_blue'], (42, 58, 92)),
+            'JS': (THEME['accent_warm'], (74, 74, 42)),
+            'TS': (THEME['accent_blue'], (42, 58, 92)),
+            'JSON': (THEME['accent_warm'], (58, 58, 42)),
+            'ZIP': (THEME['accent_green'], (42, 58, 42)),
+            'RAR': (THEME['accent_green'], (42, 58, 42)),
+            'PNG': (THEME['accent_orange'], (74, 58, 42)),
+            'JPG': (THEME['accent_orange'], (74, 58, 42)),
+            'GIF': (THEME['accent_secondary'], (58, 42, 74)),
+            'MD': (THEME['text_secondary'], (42, 42, 52)),
+            'TXT': (THEME['text_secondary'], (42, 42, 52)),
+            'PDF': (THEME['accent_rose'], (74, 42, 42)),
+        }
+        return badges.get(ext, (THEME['text_dim'], (42, 42, 52)))
+    
+    def draw_entries(self, layout):
+        """Draw entries inside the file-list panel area."""
+        x = layout['files_x']
+        w = layout['files_width']
+        y0 = layout['content_start_y']
+        visible_count = max(0, layout['content_height'])
+        y_end = y0 + visible_count
+
+        if visible_count <= 0 or w <= 0:
+            return
+
+        # Adjust scroll offset for panel-local viewport
         if self.selected_index < self.scroll_offset:
             self.scroll_offset = self.selected_index
         elif self.selected_index >= self.scroll_offset + visible_count:
             self.scroll_offset = self.selected_index - visible_count + 1
-        
-        # Draw entries
-        for i in range(visible_count):
-            entry_index = i + self.scroll_offset
-            
-            if entry_index >= len(self.entries):
-                break
-            
-            entry = self.entries[entry_index]
-            y_pos = visible_start + i
-            
-            # Determine if cursor is on this item and if file is marked
-            is_cursor = entry_index == self.selected_index
-            is_marked = entry['path'] in self.selected_files
-            
-            # Build display string
-            icon = self.get_file_icon(entry)
-            name = entry['name']
-            
-            # Selection marker with nice icons
-            if is_marked:
-                marker = f" {ICONS['check']} "
-            else:
-                marker = "   "
-            
-            # Size string
+
+        def blend(c1, c2, t):
+            return (
+                int(c1[0] + (c2[0] - c1[0]) * t),
+                int(c1[1] + (c2[1] - c1[1]) * t),
+                int(c1[2] + (c2[2] - c1[2]) * t),
+            )
+
+        def theme_file_color(entry):
             if entry['is_dir']:
-                size_str = "     <DIR>"
-            else:
-                size_str = self.get_size_string(entry['size'])
-            
-            # Permissions
-            perms = entry['perms']
-            
-            # Calculate available width for name (reserve space for scrollbar)
-            scrollbar_space = 2 if len(self.entries) > visible_count else 0
-            prefix = f"{marker} {icon}  "
-            suffix = f"  {perms}  {size_str}"
-            available_width = width - len(prefix) - len(suffix) - 2 - scrollbar_space
-            
-            if available_width < 10:
-                available_width = 10
-            
-            if len(name) > available_width:
-                name = name[:available_width-1] + "…"
-            
-            display = f"{prefix}{name:<{available_width}}{suffix}"
-            
-            # Determine colors and draw
+                return THEME['accent_blue']
+            ext = entry['path'].suffix.lower()
+            if ext in {'.zip', '.tar', '.gz', '.tgz', '.bz2', '.tbz2', '.xz', '.txz', '.rar', '.7z'}:
+                return THEME['accent_green']
+            if ext in {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma'}:
+                return THEME['accent_secondary']
+            if ext in {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm'}:
+                return THEME['accent_rose']
+            if ext in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp'}:
+                return THEME['accent_warm']
+            if ext in {'.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.c', '.cpp', '.h',
+                       '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.sh', '.bash'}:
+                return THEME['accent_blue']
+            return THEME['text_primary']
+
+        scrollbar_needed = len(self.entries) > visible_count
+        content_w = w - (1 if scrollbar_needed else 0)
+
+        # Paint panel background first
+        for y in range(y0, y_end):
             try:
-                if is_cursor and is_marked:
-                    # Cursor on marked file - gold on warm highlight
-                    self.stdscr.addstr(y_pos, 0, " " * (width - scrollbar_space), curses.color_pair(12))
-                    self.stdscr.addstr(y_pos, 0, display[:width - scrollbar_space], curses.color_pair(12) | curses.A_BOLD)
-                elif is_cursor:
-                    # Cursor on unmarked file - full-width highlight
-                    self.stdscr.addstr(y_pos, 0, " " * (width - scrollbar_space), curses.color_pair(7))
-                    self.stdscr.addstr(y_pos, 0, display[:width - scrollbar_space], curses.color_pair(7) | curses.A_BOLD)
-                elif is_marked:
-                    # Marked file without cursor - subtle yellow highlight
-                    self.stdscr.addstr(y_pos, 1, display[:width-2-scrollbar_space], curses.color_pair(10) | curses.A_BOLD)
+                if self.use_true_color:
+                    tc_addstr(self.stdscr, y, x, ' ' * w, bg=THEME['bg_base'])
                 else:
-                    # Normal entry - icon gets file color, perms/size get muted color
-                    color = self.get_file_color(entry)
-                    self.stdscr.addstr(y_pos, 0, display[:width-scrollbar_space], color)
-                    
-                    # Overlay muted permissions and size if 256-color mode
-                    if self.has_256_colors and len(display) > len(prefix) + available_width:
-                        suffix_start = len(prefix) + available_width
-                        try:
-                            self.stdscr.addstr(y_pos, suffix_start, suffix[:width - suffix_start - scrollbar_space], curses.color_pair(65))
-                        except curses.error:
-                            pass
+                    self.stdscr.addstr(y, x, ' ' * w, curses.color_pair(14))
             except curses.error:
                 pass
-        
-        # ── Enhanced scrollbar ─────────────────────────────────────────
-        if len(self.entries) > visible_count:
-            # Calculate proportional thumb
-            thumb_size = max(1, int(visible_count * visible_count / len(self.entries)))
-            thumb_pos = int((self.scroll_offset / max(1, len(self.entries) - visible_count)) * (visible_count - thumb_size))
-            
-            for i in range(visible_count):
-                y_pos = visible_start + i
-                try:
-                    if thumb_pos <= i < thumb_pos + thumb_size:
-                        self.stdscr.addstr(y_pos, width - 1, ICONS['scroll_thumb'], curses.color_pair(50) | curses.A_BOLD)
+
+        # Draw each visible entry
+        check_icon = ICONS['check'] or '✓'
+        for i in range(visible_count):
+            entry_index = i + self.scroll_offset
+            if entry_index >= len(self.entries):
+                break
+
+            entry = self.entries[entry_index]
+            y = y0 + i
+            is_selected = entry_index == self.selected_index
+            is_marked = entry['path'] in self.selected_files
+
+            icon = self.get_file_icon(entry) or ' '
+            size_str = '<DIR>' if entry['is_dir'] else self.get_size_string(entry['size']).strip()
+            perms = entry.get('perms', '')
+            marker = f" {check_icon} " if is_marked else "   "
+
+            git_indicator = ' '
+            git_color = THEME['text_dim']
+            if entry['name'] != '..' and self._git_status:
+                rel_path = None
+                if self._git_root is not None:
+                    try:
+                        rel_path = entry['path'].resolve().relative_to(self._git_root.resolve()).as_posix()
+                    except (RuntimeError, ValueError, OSError):
+                        rel_path = None
+                if rel_path is None:
+                    rel_path = entry['name']
+
+                git_state = self._git_status.get(rel_path)
+                if git_state == 'modified':
+                    git_indicator = '●'
+                    git_color = THEME['accent_orange']
+                elif git_state == 'added':
+                    git_indicator = '+'
+                    git_color = THEME['accent_green']
+                elif git_state == 'untracked':
+                    git_indicator = '?'
+                    git_color = THEME['text_dim']
+                elif git_state == 'deleted':
+                    git_indicator = '-'
+                    git_color = THEME['accent_rose']
+                elif git_state == 'renamed':
+                    git_indicator = '↻'
+                    git_color = THEME['accent_blue']
+
+            ext_badge = ''
+            if self.use_true_color and w > 80 and not entry['is_dir']:
+                ext = entry['path'].suffix.upper().lstrip('.')
+                if ext:
+                    ext_badge = f" {ext[:5]} "
+
+            left = f"{marker}{git_indicator}{icon} "
+            reserved = len(left) + 1 + 10 + 1 + 10 + (len(ext_badge) + 1 if ext_badge else 0)
+            name_w = max(6, content_w - reserved)
+
+            name = entry['name']
+            if len(name) > name_w:
+                name = name[:name_w - 1] + '…'
+
+            base_text = f"{left}{name:<{name_w}} {perms:<10} {size_str:>10}"
+            if ext_badge:
+                base_text += f" {ext_badge}"
+            row_text = base_text[:content_w].ljust(content_w)
+
+            try:
+                if self.use_true_color and is_selected:
+                    # Horizontal gradient selection with left-edge marker.
+                    for idx, ch in enumerate(row_text):
+                        t = (idx / max(1, content_w - 1))
+                        bg = blend(THEME['gradient_sel_1'], THEME['gradient_sel_2'], t)
+                        if idx == 0:
+                            tc_addstr(self.stdscr, y, x + idx, '▌', fg=THEME['accent_primary'], bg=bg, bold=True)
+                        else:
+                            tc_addstr(self.stdscr, y, x + idx, ch, fg=THEME['text_primary'], bg=bg, bold=True)
+                    if git_indicator.strip():
+                        gi_x = x + len(marker)
+                        gi_i = gi_x - x
+                        t = (gi_i / max(1, content_w - 1))
+                        gi_bg = blend(THEME['gradient_sel_1'], THEME['gradient_sel_2'], t)
+                        tc_addstr(self.stdscr, y, gi_x, git_indicator, fg=git_color, bg=gi_bg, bold=True)
+                elif self.use_true_color and is_marked:
+                    tc_addstr(self.stdscr, y, x, row_text, fg=THEME['text_primary'], bg=THEME['mark_bg'])
+                    tc_addstr(self.stdscr, y, x + 1, check_icon, fg=THEME['accent_warm'], bg=THEME['mark_bg'], bold=True)
+                    if git_indicator.strip():
+                        tc_addstr(self.stdscr, y, x + len(marker), git_indicator, fg=git_color, bg=THEME['mark_bg'], bold=True)
+                elif self.use_true_color:
+                    tc_addstr(self.stdscr, y, x, row_text, fg=THEME['text_primary'], bg=THEME['bg_base'])
+                    gi_x = x + len(marker)
+                    icon_x = gi_x + 1
+                    if git_indicator.strip():
+                        tc_addstr(self.stdscr, y, gi_x, git_indicator, fg=git_color, bg=THEME['bg_base'], bold=True)
+                    tc_addstr(self.stdscr, y, icon_x, icon, fg=theme_file_color(entry), bg=THEME['bg_base'])
+                    suffix_x = x + len(left) + name_w + 1
+                    tc_addstr(self.stdscr, y, suffix_x, f"{perms:<10} {size_str:>10}"[:max(0, content_w - (suffix_x - x))], fg=THEME['text_secondary'], bg=THEME['bg_base'])
+
+                    if ext_badge:
+                        badge_x = suffix_x + len(f"{perms:<10} {size_str:>10}") + 1
+                        if badge_x + len(ext_badge) <= x + content_w:
+                            badge_fg, badge_bg = self._get_ext_badge_colors(ext_badge.strip())
+                            tc_addstr(self.stdscr, y, badge_x, ext_badge, fg=badge_fg, bg=badge_bg, bold=True)
+                else:
+                    if is_selected:
+                        self.stdscr.addstr(y, x, row_text, curses.color_pair(7) | curses.A_BOLD)
+                    elif is_marked:
+                        self.stdscr.addstr(y, x, row_text, curses.color_pair(12) | curses.A_BOLD)
                     else:
-                        self.stdscr.addstr(y_pos, width - 1, ICONS['scroll_track'], curses.color_pair(51))
+                        self.stdscr.addstr(y, x, row_text, self.get_file_color(entry))
+                        icon_x = x + len(marker) + 1
+                        self.stdscr.addstr(y, icon_x, icon, self.get_file_color(entry))
+                        suffix_x = x + len(left) + name_w + 1
+                        self.stdscr.addstr(y, suffix_x, f"{perms:<10} {size_str:>10}"[:max(0, content_w - (suffix_x - x))], curses.color_pair(14))
+            except curses.error:
+                pass
+
+        # Scrollbar
+        if scrollbar_needed and w > 1:
+            track_x = x + w - 1
+            thumb_size = max(1, int(visible_count * visible_count / max(1, len(self.entries))))
+            thumb_pos = int((self.scroll_offset / max(1, len(self.entries) - visible_count)) * max(0, visible_count - thumb_size))
+
+            for i in range(visible_count):
+                y = y0 + i
+                is_thumb = thumb_pos <= i < thumb_pos + thumb_size
+                ch = '█' if is_thumb else '│'
+                try:
+                    if self.use_true_color:
+                        tc_addstr(
+                            self.stdscr,
+                            y,
+                            track_x,
+                            ch,
+                            fg=THEME['accent_primary'] if is_thumb else THEME['text_dim'],
+                            bg=THEME['bg_base'],
+                            bold=is_thumb,
+                        )
+                    else:
+                        self.stdscr.addstr(y, track_x, ch, (curses.color_pair(50) | curses.A_BOLD) if is_thumb else curses.color_pair(51))
                 except curses.error:
                     pass
+
+    def draw_panel_borders(self, layout):
+        """Draw vertical separators between panels, highlighting active panel boundaries."""
+        height = layout['height']
+
+        def border_color_for(separator_kind):
+            if separator_kind == 'left':
+                active = self.active_panel in {'sidebar', 'files'}
+            else:
+                active = self.active_panel in {'files', 'preview'}
+            if self.use_true_color:
+                return THEME['border_accent'] if active else THEME['border_subtle']
+            return curses.color_pair(19) if active else curses.color_pair(14)
+
+        if layout['sidebar_width'] > 0:
+            x = layout['sidebar_x'] + layout['sidebar_width']
+            for y in range(0, height):
+                try:
+                    if self.use_true_color:
+                        tc_addstr(self.stdscr, y, x, '│', fg=border_color_for('left'))
+                    else:
+                        self.stdscr.addstr(y, x, '│', border_color_for('left'))
+                except curses.error:
+                    pass
+
+        if layout['preview_width'] > 0:
+            x = layout['preview_x']
+            for y in range(0, height):
+                try:
+                    if self.use_true_color:
+                        tc_addstr(self.stdscr, y, x, '│', fg=border_color_for('right'))
+                    else:
+                        self.stdscr.addstr(y, x, '│', border_color_for('right'))
+                except curses.error:
+                    pass
+
+    def draw_sidebar(self, layout):
+        """Draw sidebar panel with quick access and expandable directory tree."""
+        if layout['sidebar_width'] == 0:
+            self.sidebar_items = []
+            self.sidebar_selected = 0
+            return
+
+        x = layout['sidebar_x']
+        w = layout['sidebar_width']
+        y_start = layout['content_start_y']
+        y_end = layout['footer_y']
+        panel_h = max(0, y_end - y_start)
+        inner_w = max(0, w - 2)
+
+        # Paint sidebar background
+        for y in range(y_start, y_end):
+            try:
+                if self.use_true_color:
+                    tc_addstr(self.stdscr, y, x, ' ' * w, bg=THEME['bg_surface'])
+                else:
+                    self.stdscr.addstr(y, x, ' ' * w, curses.color_pair(14))
+            except curses.error:
+                pass
+
+        if panel_h <= 0 or inner_w <= 0:
+            self.sidebar_items = []
+            self.sidebar_selected = 0
+            return
+
+        def draw_line(y, text, fg=None, bg=None, bold=False):
+            if y < y_start or y >= y_end:
+                return
+            clipped = text[:inner_w]
+            padded = clipped.ljust(inner_w)
+            try:
+                if self.use_true_color:
+                    tc_addstr(self.stdscr, y, x + 1, padded, fg=fg, bg=bg or THEME['bg_surface'], bold=bold)
+                else:
+                    attr = curses.color_pair(14)
+                    if bold:
+                        attr |= curses.A_BOLD
+                    self.stdscr.addstr(y, x + 1, padded, attr)
+            except curses.error:
+                pass
+
+        def add_quick_item(label, path, icon=''):
+            quick_items.append({'label': label, 'path': path, 'icon': icon})
+
+        home = Path.home().resolve()
+        quick_items = []
+        add_quick_item('Home', home, '⌂')
+        add_quick_item('Root', Path('/'), '/')
+
+        for name, icon in [
+            ('Downloads', '↓'),
+            ('Documents', '⌘'),
+            ('Music', '♪'),
+            ('Pictures', '◉'),
+            ('Videos', '▶'),
+        ]:
+            p = home / name
+            if p.exists() and p.is_dir():
+                add_quick_item(name, p, icon)
+
+        for bookmark_name, bookmark_path in self.config.get_bookmarks().items():
+            try:
+                p = Path(bookmark_path).expanduser().resolve()
+                if p.exists() and p.is_dir():
+                    add_quick_item(bookmark_name, p, '★')
+            except (OSError, RuntimeError, ValueError):
+                continue
+
+        # Keep tree data fresh while drawing
+        self._build_tree()
+        tree_items = list(getattr(self, '_tree_items', []))
+
+        quick_rows_needed = len(quick_items) + 3  # header + separator + items + blank line
+        tree_rows = max(0, panel_h - quick_rows_needed)
+
+        y = y_start
+        draw_line(y, '★ QUICK ACCESS', fg=THEME['accent_warm'], bold=True)
+        y += 1
+        draw_line(y, '─' * inner_w, fg=THEME['text_dim'])
+        y += 1
+
+        self.sidebar_items = []
+
+        current_dir_resolved = self.current_dir.resolve()
+
+        for item in quick_items:
+            label = f" {item['icon']} {item['label']}"
+            is_current = False
+            try:
+                is_current = item['path'].resolve() == current_dir_resolved
+            except (OSError, RuntimeError):
+                is_current = False
+
+            idx = len(self.sidebar_items)
+            self.sidebar_items.append(('quick', item, 0))
+            is_selected = (self.active_panel == 'sidebar' and self.sidebar_selected == idx)
+
+            fg = THEME['accent_primary'] if is_current else THEME['text_secondary']
+            bg = THEME['bg_selection_accent'] if is_selected else THEME['bg_surface']
+            draw_line(y, label, fg=fg, bg=bg, bold=is_current or is_selected)
+            y += 1
+            if y >= y_end:
+                break
+
+        if y < y_end:
+            draw_line(y, '', fg=THEME['text_dim'])
+            y += 1
+
+        if tree_rows > 0 and y < y_end:
+            draw_line(y, ' TREE', fg=THEME['accent_warm'], bold=True)
+            y += 1
+        if tree_rows > 1 and y < y_end:
+            draw_line(y, '─' * inner_w, fg=THEME['text_dim'])
+            y += 1
+
+        # Reserve 2 lines for tree header/separator
+        tree_visible_rows = max(0, tree_rows - 2)
+
+        # Determine selection index inside tree list for scrolling
+        selected_tree_idx = 0
+        if self.active_panel == 'sidebar':
+            for idx, item in enumerate(self.sidebar_items):
+                if idx == self.sidebar_selected and item[0] == 'tree':
+                    selected_tree_idx = sum(1 for t in self.sidebar_items[:idx] if t[0] == 'tree')
+                    break
+
+        tree_scroll = self.sidebar_scroll
+        if tree_visible_rows > 0:
+            if selected_tree_idx < tree_scroll:
+                tree_scroll = selected_tree_idx
+            elif selected_tree_idx >= tree_scroll + tree_visible_rows:
+                tree_scroll = selected_tree_idx - tree_visible_rows + 1
+            max_scroll = max(0, len(tree_items) - tree_visible_rows)
+            tree_scroll = max(0, min(tree_scroll, max_scroll))
+        else:
+            tree_scroll = 0
+        self.sidebar_scroll = tree_scroll
+
+        visible_tree = tree_items[tree_scroll:tree_scroll + tree_visible_rows]
+
+        for tree_item in visible_tree:
+            idx = len(self.sidebar_items)
+            self.sidebar_items.append(('tree', tree_item, tree_item['depth']))
+
+            marker = '▾' if tree_item['is_expanded'] else '▸'
+            line_text = f"{tree_item['tree_prefix']}{marker} {tree_item['name']}"
+
+            is_current = False
+            try:
+                is_current = tree_item['path'].resolve() == current_dir_resolved
+            except (OSError, RuntimeError):
+                is_current = False
+
+            is_selected = (self.active_panel == 'sidebar' and self.sidebar_selected == idx)
+            fg = THEME['accent_blue']
+            bg = THEME['bg_selection_accent'] if (is_current or is_selected) else THEME['bg_surface']
+            draw_line(y, line_text, fg=fg, bg=bg, bold=(is_current or is_selected))
+            y += 1
+            if y >= y_end:
+                break
+
+        # Clamp selection to available sidebar items
+        if not self.sidebar_items:
+            self.sidebar_selected = 0
+        else:
+            self.sidebar_selected = max(0, min(self.sidebar_selected, len(self.sidebar_items) - 1))
+
+    def _ffprobe_info(self, path):
+        """Get media info via ffprobe. Returns dict or None."""
+        try:
+            result = subprocess.run(
+                ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', str(path)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return json.loads(result.stdout)
+        except Exception:
+            pass
+        return None
+
+    def _get_image_dimensions(self, path):
+        """Get image dimensions using identify (ImageMagick)."""
+        try:
+            result = subprocess.run(
+                ['identify', '-format', '%wx%h', str(path)],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode == 0:
+                parts = result.stdout.strip().split('x')
+                if len(parts) == 2:
+                    return int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+        return None, None
+
+    def draw_preview(self, layout):
+        """Draw contextual preview for the currently selected entry."""
+        if layout['preview_width'] == 0:
+            return
+
+        x = layout['preview_x']
+        w = layout['preview_width']
+        y_start = layout['content_start_y']
+        y_end = layout['footer_y']
+        inner_w = max(0, w - 2)
+
+        if y_end <= y_start:
+            return
+
+        selected_entry = None
+        if self.entries and 0 <= self.selected_index < len(self.entries):
+            selected_entry = self.entries[self.selected_index]
+
+        selected_path = selected_entry['path'] if selected_entry else None
+        same_path = self.preview_cache.get('path') == selected_path
+
+        if not same_path:
+            kitty_delete_images()
+            self.preview_cache['image_id'] = 0
+
+        # Fill panel background
+        for y in range(y_start, y_end):
+            try:
+                if self.use_true_color:
+                    tc_addstr(self.stdscr, y, x, ' ' * w, bg=THEME['bg_surface'])
+                else:
+                    self.stdscr.addstr(y, x, ' ' * w, curses.color_pair(14))
+            except curses.error:
+                pass
+
+        def draw_line(y, text, fg=None, bg=None, bold=False, dim=False):
+            if y < y_start or y >= y_end or inner_w <= 0:
+                return
+            clipped = text[:inner_w]
+            padded = clipped.ljust(inner_w)
+            try:
+                if self.use_true_color:
+                    tc_addstr(
+                        self.stdscr,
+                        y,
+                        x + 1,
+                        padded,
+                        fg=fg,
+                        bg=bg or THEME['bg_surface'],
+                        bold=bold,
+                        dim=dim,
+                    )
+                else:
+                    attr = curses.color_pair(14)
+                    if bold:
+                        attr |= curses.A_BOLD
+                    if dim:
+                        attr |= curses.A_DIM
+                    self.stdscr.addstr(y, x + 1, padded, attr)
+            except curses.error:
+                pass
+
+        def format_duration(seconds):
+            try:
+                seconds = float(seconds)
+            except (ValueError, TypeError):
+                return '00:00'
+            if seconds < 0:
+                return '00:00'
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            secs = int(seconds % 60)
+            if hours > 0:
+                return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+            return f"{minutes:02d}:{secs:02d}"
+
+        def format_bitrate(bitrate):
+            try:
+                bitrate = int(float(str(bitrate)))
+            except (ValueError, TypeError):
+                return 'N/A'
+            if bitrate <= 0:
+                return 'N/A'
+            if bitrate >= 1_000_000:
+                return f"{bitrate / 1_000_000:.1f} Mbps"
+            if bitrate >= 1_000:
+                return f"{bitrate / 1_000:.0f} kbps"
+            return f"{bitrate} bps"
+
+        def parse_fps(value):
+            try:
+                if isinstance(value, str) and '/' in value:
+                    num, den = value.split('/', 1)
+                    den_f = float(den)
+                    return float(num) / den_f if den_f else 0.0
+                return float(value)
+            except (ValueError, TypeError):
+                return 0.0
+
+        def audio_quality_score(info):
+            sample_rate = int(info.get('sample_rate') or 0)
+            bit_rate = int(info.get('bit_rate') or 0)
+            codec = str(info.get('codec', '')).lower()
+
+            score = 0
+            if sample_rate >= 192000:
+                score += 30
+            elif sample_rate >= 96000:
+                score += 28
+            elif sample_rate >= 48000:
+                score += 25
+            elif sample_rate >= 44100:
+                score += 20
+            else:
+                score += 10
+
+            if bit_rate >= 1411000:
+                score += 35
+            elif bit_rate >= 320000:
+                score += 30
+            elif bit_rate >= 256000:
+                score += 25
+            elif bit_rate >= 192000:
+                score += 20
+            elif bit_rate >= 128000:
+                score += 15
+            else:
+                score += 5
+
+            if codec in {'flac', 'alac', 'ape', 'wav'}:
+                score += 15
+            elif codec in {'aac', 'opus', 'vorbis'}:
+                score += 10
+            elif codec == 'mp3':
+                score += 8
+            else:
+                score += 5
+
+            return max(0, min(100, score))
+
+        # Header + separator
+        header_label = 'PREVIEW'
+        if selected_entry:
+            header_label = selected_entry['name']
+        header_label = header_label[:max(0, inner_w)]
+        label_x = x + 1 + max(0, (inner_w - len(header_label)) // 2)
+        try:
+            if self.use_true_color:
+                tc_addstr(self.stdscr, y_start, x, ' ' * w, bg=THEME['bg_surface'])
+                tc_addstr(self.stdscr, y_start, label_x, header_label, fg=THEME['text_dim'], bg=THEME['bg_surface'])
+            else:
+                self.stdscr.addstr(y_start, x, ' ' * w, curses.color_pair(14))
+                self.stdscr.addstr(y_start, label_x, header_label, curses.color_pair(14))
+        except curses.error:
+            pass
+
+        if y_start + 1 < y_end:
+            sep = '─' * w
+            try:
+                if self.use_true_color:
+                    tc_addstr(self.stdscr, y_start + 1, x, sep, fg=THEME['border_subtle'], bg=THEME['bg_surface'])
+                else:
+                    self.stdscr.addstr(y_start + 1, x, sep, curses.color_pair(14))
+            except curses.error:
+                pass
+
+        content_top = y_start + 2
+        content_height = max(0, y_end - content_top)
+        if content_height <= 0:
+            return
+
+        if not selected_entry:
+            draw_line(content_top, 'No selection', fg=THEME['text_dim'])
+            self.preview_cache['path'] = None
+            self.preview_cache['content'] = None
+            return
+
+        preview_data = self.preview_cache.get('content') if same_path else None
+
+        if preview_data is None:
+            path = selected_entry['path']
+            preview_data = {
+                'type': 'other',
+                'path': path,
+            }
+
+            if selected_entry['is_dir']:
+                file_count = 0
+                total_size = 0
+                type_sizes = defaultdict(int)
+                type_counts = defaultdict(int)
+                capped = False
+                try:
+                    for root, _, files in os.walk(path):
+                        for file_name in files:
+                            full_path = Path(root) / file_name
+                            try:
+                                size = full_path.stat().st_size
+                            except Exception:
+                                size = 0
+                            category = self.get_file_type_category(full_path)
+                            file_count += 1
+                            total_size += size
+                            type_sizes[category] += size
+                            type_counts[category] += 1
+                            if file_count >= 1000:
+                                capped = True
+                                break
+                        if capped:
+                            break
+                except Exception:
+                    pass
+
+                if capped:
+                    analysis = {
+                        'total_files': file_count,
+                        'total_size': total_size,
+                        'file_types': dict(type_counts),
+                        'file_type_sizes': dict(type_sizes),
+                        'partial': True,
+                    }
+                else:
+                    analysis = self.analyze_directory_contents(path)
+                    analysis['partial'] = False
+
+                preview_data = {
+                    'type': 'directory',
+                    'path': path,
+                    'analysis': analysis,
+                }
+
+            elif self.is_text_file(path):
+                raw = b''
+                encoding = 'utf-8'
+                truncated = False
+                error_text = None
+                try:
+                    with open(path, 'rb') as f:
+                        raw = f.read(8192)
+                        truncated = bool(f.read(1))
+                except Exception as e:
+                    error_text = str(e)
+
+                text_data = ''
+                if error_text is None:
+                    try:
+                        text_data = raw.decode('utf-8')
+                        encoding = 'utf-8'
+                    except UnicodeDecodeError:
+                        text_data = raw.decode('utf-8', errors='replace')
+                        encoding = 'utf-8 (replace)'
+
+                preview_data = {
+                    'type': 'text',
+                    'path': path,
+                    'encoding': encoding,
+                    'text': text_data,
+                    'error': error_text,
+                    'truncated': truncated,
+                }
+
+            elif self.is_image_file(path):
+                dims = self._get_image_dimensions(path)
+                mime, _ = mimetypes.guess_type(str(path))
+
+                ascii_art = None
+                if not self.kitty.has_graphics:
+                    chafa_path = shutil.which('chafa')
+                    if chafa_path:
+                        cols = max(10, inner_w)
+                        rows = max(4, content_height - 6)
+                        try:
+                            chafa = subprocess.run(
+                                ['chafa', '--size', f'{cols}x{rows}', str(path)],
+                                capture_output=True,
+                                text=True,
+                                timeout=3,
+                            )
+                            if chafa.returncode == 0 and chafa.stdout.strip():
+                                ascii_art = chafa.stdout.splitlines()
+                        except Exception:
+                            pass
+
+                preview_data = {
+                    'type': 'image',
+                    'path': path,
+                    'dims': dims,
+                    'mime': mime,
+                    'ascii_art': ascii_art,
+                }
+
+            elif self.is_audio_file(path):
+                media = self._ffprobe_info(path)
+                stream = None
+                format_info = {}
+                if media:
+                    format_info = media.get('format', {})
+                    for s in media.get('streams', []):
+                        if s.get('codec_type') == 'audio':
+                            stream = s
+                            break
+
+                bit_rate = 0
+                sample_rate = 0
+                channels = 0
+                duration = 0.0
+                codec = 'N/A'
+                if stream:
+                    try:
+                        bit_rate = int(float(stream.get('bit_rate') or format_info.get('bit_rate') or 0))
+                    except (ValueError, TypeError):
+                        bit_rate = 0
+                    try:
+                        sample_rate = int(float(stream.get('sample_rate') or 0))
+                    except (ValueError, TypeError):
+                        sample_rate = 0
+                    try:
+                        channels = int(float(stream.get('channels') or 0))
+                    except (ValueError, TypeError):
+                        channels = 0
+                    try:
+                        duration = float(format_info.get('duration') or stream.get('duration') or 0)
+                    except (ValueError, TypeError):
+                        duration = 0.0
+                    codec = stream.get('codec_name', 'N/A')
+
+                preview_data = {
+                    'type': 'audio',
+                    'path': path,
+                    'ext': path.suffix.upper().lstrip('.') or 'AUDIO',
+                    'bit_rate': bit_rate,
+                    'sample_rate': sample_rate,
+                    'duration': duration,
+                    'channels': channels,
+                    'codec': codec,
+                    'ffprobe_ok': media is not None,
+                }
+
+            elif self.is_video_file(path):
+                media = self._ffprobe_info(path)
+                stream = None
+                format_info = {}
+                if media:
+                    format_info = media.get('format', {})
+                    for s in media.get('streams', []):
+                        if s.get('codec_type') == 'video' and s.get('disposition', {}).get('attached_pic', 0) != 1:
+                            stream = s
+                            break
+
+                width_px = 0
+                height_px = 0
+                codec = 'N/A'
+                bit_rate = 0
+                fps = 0.0
+                duration = 0.0
+                if stream:
+                    width_px = int(stream.get('width') or 0)
+                    height_px = int(stream.get('height') or 0)
+                    codec = stream.get('codec_name', 'N/A')
+                    try:
+                        bit_rate = int(float(stream.get('bit_rate') or format_info.get('bit_rate') or 0))
+                    except (ValueError, TypeError):
+                        bit_rate = 0
+                    fps = parse_fps(stream.get('r_frame_rate', '0/1'))
+                    if fps == 0.0:
+                        fps = parse_fps(stream.get('avg_frame_rate', '0/1'))
+                    try:
+                        duration = float(format_info.get('duration') or stream.get('duration') or 0)
+                    except (ValueError, TypeError):
+                        duration = 0.0
+
+                preview_data = {
+                    'type': 'video',
+                    'path': path,
+                    'width': width_px,
+                    'height': height_px,
+                    'codec': codec,
+                    'bit_rate': bit_rate,
+                    'fps': fps,
+                    'duration': duration,
+                    'ffprobe_ok': media is not None,
+                }
+
+            else:
+                mime, _ = mimetypes.guess_type(str(path))
+                preview_data = {
+                    'type': 'other',
+                    'path': path,
+                    'mime': mime or 'application/octet-stream',
+                }
+
+            self.preview_cache['path'] = selected_path
+            self.preview_cache['content'] = preview_data
+
+        path = preview_data.get('path', selected_entry['path'])
+        info_y = content_top
+
+        # Text preview
+        if preview_data.get('type') == 'text':
+            error_text = preview_data.get('error')
+            if error_text:
+                draw_line(info_y, 'Text preview unavailable', fg=THEME['text_dim'])
+                draw_line(info_y + 1, error_text, fg=THEME['accent_rose'])
+                return
+
+            text = preview_data.get('text', '')
+            lines = text.splitlines()
+            total_lines = len(lines)
+            encoding = preview_data.get('encoding', 'utf-8')
+
+            draw_line(info_y, f"{path.name}  [{encoding}]", fg=THEME['text_primary'], bold=True)
+            draw_line(info_y + 1, f"{total_lines} lines", fg=THEME['text_dim'])
+
+            available_lines = max(0, content_height - 4)
+            start_y = info_y + 2
+            shown = min(len(lines), available_lines)
+
+            for idx in range(shown):
+                row = start_y + idx
+                number = f"{idx + 1:>4} "
+                body = lines[idx]
+                if self.use_true_color:
+                    draw_line(row, f"{number}{body}", fg=THEME['text_secondary'])
+                    try:
+                        tc_addstr(self.stdscr, row, x + 1, number[:inner_w], fg=THEME['text_dim'], bg=THEME['bg_surface'])
+                    except curses.error:
+                        pass
+                else:
+                    draw_line(row, f"{number}{body}", fg=THEME['text_secondary'])
+
+            remaining = total_lines - shown
+            if preview_data.get('truncated'):
+                remaining = max(remaining, 1)
+            if remaining > 0 and start_y + shown < y_end:
+                draw_line(start_y + shown, f"… {remaining} more lines", fg=THEME['text_dim'])
+            return
+
+        # Directory preview
+        if preview_data.get('type') == 'directory':
+            analysis = preview_data.get('analysis', {})
+            draw_line(info_y, f"{path.name}/", fg=THEME['accent_blue'], bold=True)
+            draw_line(info_y + 1, f"Files: {analysis.get('total_files', 0)}", fg=THEME['text_secondary'])
+            draw_line(info_y + 2, f"Size: {self.get_size_string(analysis.get('total_size', 0)).strip()}", fg=THEME['text_secondary'])
+            if analysis.get('partial'):
+                draw_line(info_y + 3, 'Partial scan (first 1000 files)', fg=THEME['text_dim'])
+
+            type_sizes = analysis.get('file_type_sizes', {})
+            total_size = sum(type_sizes.values())
+            bar_y = info_y + 5
+            if total_size > 0 and bar_y < y_end:
+                chars = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
+                units = max(1, inner_w * 8)
+                bar_units = 0
+                bar = []
+                sorted_types = sorted(type_sizes.items(), key=lambda kv: kv[1], reverse=True)
+                for _, size in sorted_types:
+                    width_units = max(1, int((size / total_size) * units))
+                    bar_units += width_units
+                    full = width_units // 8
+                    rem = width_units % 8
+                    bar.append('█' * full)
+                    if rem > 0:
+                        bar.append(chars[rem - 1])
+                chart = ''.join(bar)
+                if len(chart) < inner_w:
+                    chart += ' ' * (inner_w - len(chart))
+                draw_line(bar_y, chart[:inner_w], fg=THEME['accent_primary'])
+
+            row = bar_y + 1
+            for file_type, size in sorted(type_sizes.items(), key=lambda kv: kv[1], reverse=True):
+                if row >= y_end:
+                    break
+                count = analysis.get('file_types', {}).get(file_type, 0)
+                pct = (size / total_size * 100.0) if total_size > 0 else 0.0
+                line = f"{file_type:<10} {count:>4}  {self.get_size_string(size).strip():>9}  {pct:>5.1f}%"
+                draw_line(row, line, fg=THEME['text_secondary'])
+                row += 1
+            return
+
+        # Common file info
+        size_str = self.get_size_string(selected_entry.get('size', 0)).strip()
+
+        # Image preview
+        if preview_data.get('type') == 'image':
+            dims = preview_data.get('dims', (None, None))
+            if self.kitty.has_graphics:
+                image_cols = max(8, w - 2)
+                image_rows = max(4, content_height - 6)
+                image_x = x + 1
+                image_y = content_top
+                if self.preview_cache.get('image_id', 0) == 0:
+                    self.preview_cache['image_id'] = int(time.time() * 1000) % 100000
+                kitty_send_image(str(path), image_x, image_y, image_cols, image_rows, image_id=self.preview_cache['image_id'])
+                info_y = image_y + image_rows + 1
+            else:
+                ascii_art = preview_data.get('ascii_art')
+                if ascii_art:
+                    row = info_y
+                    for line in ascii_art:
+                        if row >= y_end - 4:
+                            break
+                        draw_line(row, line, fg=THEME['text_secondary'])
+                        row += 1
+                    info_y = min(y_end - 3, row + 1)
+
+            draw_line(info_y, path.name, fg=THEME['text_primary'], bold=True)
+            dim_text = 'Unknown dimensions'
+            if dims and dims[0] and dims[1]:
+                dim_text = f"{dims[0]}x{dims[1]}"
+            draw_line(info_y + 1, f"{dim_text}  {size_str}", fg=THEME['text_secondary'])
+            mime = preview_data.get('mime')
+            if mime:
+                draw_line(info_y + 2, mime, fg=THEME['text_dim'])
+            return
+
+        # Audio preview
+        if preview_data.get('type') == 'audio':
+            art_tmp = None
+            if self.kitty.has_graphics and shutil.which('ffmpeg'):
+                fd, art_tmp = tempfile.mkstemp(suffix='.jpg')
+                os.close(fd)
+                try:
+                    subprocess.run(
+                        ['ffmpeg', '-i', str(path), '-an', '-vcodec', 'copy', art_tmp, '-y'],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    if os.path.exists(art_tmp) and os.path.getsize(art_tmp) > 0:
+                        image_cols = max(8, w - 2)
+                        image_rows = max(4, content_height - 6)
+                        image_x = x + 1
+                        image_y = content_top
+                        if self.preview_cache.get('image_id', 0) == 0:
+                            self.preview_cache['image_id'] = int(time.time() * 1000) % 100000
+                        kitty_send_image(art_tmp, image_x, image_y, image_cols, image_rows, image_id=self.preview_cache['image_id'])
+                        info_y = image_y + image_rows + 1
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        if art_tmp and os.path.exists(art_tmp):
+                            os.unlink(art_tmp)
+                    except Exception:
+                        pass
+
+            ext_badge = preview_data.get('ext', 'AUDIO')
+            draw_line(info_y, f"[{ext_badge}] {path.name}", fg=THEME['accent_secondary'], bold=True)
+            if not preview_data.get('ffprobe_ok'):
+                draw_line(info_y + 1, 'ffprobe unavailable', fg=THEME['text_dim'])
+                draw_line(info_y + 2, f"Size: {size_str}", fg=THEME['text_secondary'])
+                return
+
+            bit_rate = preview_data.get('bit_rate', 0)
+            sample_rate = preview_data.get('sample_rate', 0)
+            duration = preview_data.get('duration', 0.0)
+            channels = preview_data.get('channels', 0)
+            codec = preview_data.get('codec', 'N/A')
+            score = audio_quality_score({'bit_rate': bit_rate, 'sample_rate': sample_rate, 'codec': codec})
+            bar_w = max(8, min(inner_w - 8, 20))
+            fill = int((score / 100.0) * bar_w)
+            qbar = ('━' * fill) + ('─' * max(0, bar_w - fill))
+
+            draw_line(info_y + 1, f"Codec: {codec}", fg=THEME['text_secondary'])
+            draw_line(info_y + 2, f"Bitrate: {format_bitrate(bit_rate)}", fg=THEME['text_secondary'])
+            draw_line(info_y + 3, f"Sample: {sample_rate:,} Hz" if sample_rate else 'Sample: N/A', fg=THEME['text_secondary'])
+            draw_line(info_y + 4, f"Duration: {format_duration(duration)}", fg=THEME['text_secondary'])
+            draw_line(info_y + 5, f"Channels: {channels or 'N/A'}", fg=THEME['text_secondary'])
+            draw_line(info_y + 6, f"Quality {score:>3}% {qbar}", fg=THEME['accent_primary'])
+            draw_line(info_y + 7, f"Size: {size_str}", fg=THEME['text_dim'])
+            return
+
+        # Video preview
+        if preview_data.get('type') == 'video':
+            thumb_tmp = None
+            if self.kitty.has_graphics and shutil.which('ffmpeg'):
+                fd, thumb_tmp = tempfile.mkstemp(suffix='.jpg')
+                os.close(fd)
+                try:
+                    subprocess.run(
+                        ['ffmpeg', '-ss', '5', '-i', str(path), '-vf', 'thumbnail', '-frames:v', '1', thumb_tmp, '-y'],
+                        capture_output=True,
+                        timeout=10,
+                    )
+                    if os.path.exists(thumb_tmp) and os.path.getsize(thumb_tmp) > 0:
+                        image_cols = max(8, w - 2)
+                        image_rows = max(4, content_height - 6)
+                        image_x = x + 1
+                        image_y = content_top
+                        if self.preview_cache.get('image_id', 0) == 0:
+                            self.preview_cache['image_id'] = int(time.time() * 1000) % 100000
+                        kitty_send_image(thumb_tmp, image_x, image_y, image_cols, image_rows, image_id=self.preview_cache['image_id'])
+                        info_y = image_y + image_rows + 1
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        if thumb_tmp and os.path.exists(thumb_tmp):
+                            os.unlink(thumb_tmp)
+                    except Exception:
+                        pass
+
+            draw_line(info_y, path.name, fg=THEME['accent_rose'], bold=True)
+            if not preview_data.get('ffprobe_ok'):
+                draw_line(info_y + 1, 'ffprobe unavailable', fg=THEME['text_dim'])
+                draw_line(info_y + 2, f"Size: {size_str}", fg=THEME['text_secondary'])
+                return
+
+            w_px = preview_data.get('width', 0)
+            h_px = preview_data.get('height', 0)
+            codec = preview_data.get('codec', 'N/A')
+            bit_rate = preview_data.get('bit_rate', 0)
+            fps = preview_data.get('fps', 0.0)
+            duration = preview_data.get('duration', 0.0)
+
+            draw_line(info_y + 1, f"Resolution: {w_px}x{h_px}" if w_px and h_px else 'Resolution: N/A', fg=THEME['text_secondary'])
+            draw_line(info_y + 2, f"Codec: {codec}", fg=THEME['text_secondary'])
+            draw_line(info_y + 3, f"Bitrate: {format_bitrate(bit_rate)}", fg=THEME['text_secondary'])
+            draw_line(info_y + 4, f"FPS: {fps:.2f}" if fps else 'FPS: N/A', fg=THEME['text_secondary'])
+            draw_line(info_y + 5, f"Duration: {format_duration(duration)}", fg=THEME['text_secondary'])
+            draw_line(info_y + 6, f"Size: {size_str}", fg=THEME['text_dim'])
+            return
+
+        # Generic file info card
+        mime = preview_data.get('mime') or 'application/octet-stream'
+        draw_line(info_y, path.name, fg=THEME['text_primary'], bold=True)
+        draw_line(info_y + 1, f"Size: {size_str}", fg=THEME['text_secondary'])
+        draw_line(info_y + 2, f"Perms: {selected_entry.get('perms', self.get_permissions_string(path))}", fg=THEME['text_secondary'])
+        draw_line(info_y + 3, f"MIME: {mime}", fg=THEME['text_dim'])
+        try:
+            if self.use_true_color:
+                tc_addstr(self.stdscr, label_y, label_x, label[:w], fg=THEME['text_dim'], bg=THEME['bg_surface'])
+            else:
+                self.stdscr.addstr(label_y, label_x, label[:w], curses.color_pair(14))
+        except curses.error:
+            pass
     
     def draw(self):
-        """Draw the entire interface"""
+        """Draw the entire interface."""
         self.stdscr.clear()
-        self.draw_header()
-        self.draw_entries()
-        self.draw_footer()
+        layout = self._calc_layout()
+        self.draw_panel_borders(layout)
+        self.draw_header(layout)
+        if layout['sidebar_width'] > 0:
+            self.draw_sidebar(layout)
+        self.draw_entries(layout)
+        if layout['preview_width'] > 0:
+            self.draw_preview(layout)
+        self.draw_footer(layout)
         self.stdscr.refresh()
     
     def change_directory(self, new_dir):
@@ -928,6 +2446,12 @@ class FileManager:
                 self.selected_index = 0
                 self.scroll_offset = 0
                 self.load_directory()
+                if self.use_true_color:
+                    height, width = self.stdscr.getmaxyx()
+                    for y in range(height):
+                        tc_addstr(self.stdscr, y, 0, ' ' * width, bg=THEME['bg_base'])
+                    self.stdscr.refresh()
+                    curses.napms(15)
                 self.message = ""
             else:
                 self.message = "Directory does not exist"
@@ -1167,21 +2691,323 @@ class FileManager:
         curses.curs_set(0)
         
         return input_str.strip()
+
+    def _execute_palette_action(self, action):
+        """Dispatch a command-palette action to existing handlers."""
+        if action == 'copy':
+            self.copy_to_clipboard()
+        elif action == 'cut':
+            self.cut_to_clipboard()
+        elif action == 'paste':
+            self.paste_from_clipboard()
+        elif action == 'delete':
+            self.delete_files()
+        elif action == 'new':
+            self.create_new()
+        elif action == 'rename':
+            self.rename_item()
+        elif action == 'bookmarks':
+            self.show_bookmarks_menu()
+        elif action == 'tools':
+            self.show_tools_menu()
+        elif action == 'permissions':
+            self.fix_permissions()
+        elif action == 'find_empty':
+            self.find_empty_folders()
+        elif action == 'extract':
+            self.extract_archives()
+        elif action == 'help':
+            self.show_help = not self.show_help
+        elif action == 'quit':
+            self.running = False
+
+    def show_command_palette(self, mode='command'):
+        """Show VS Code-style command/search palette."""
+        height, width = self.stdscr.getmaxyx()
+        palette_width = min(width - 8, 60)
+        if palette_width < 20:
+            return
+
+        start_y = 4
+        start_x = (width - palette_width) // 2
+        max_visible_items = 12
+
+        query = ""
+        selected = 0
+        scroll = 0
+
+        try:
+            curses.curs_set(1)
+        except curses.error:
+            pass
+
+        try:
+            while True:
+                if mode == 'command':
+                    q = query.lower().strip()
+                    filtered = [cmd for cmd in PALETTE_COMMANDS if q in cmd['label'].lower()]
+                else:
+                    q = query.lower().strip()
+                    filtered = [e for e in self.entries if q in e['name'].lower()]
+
+                if selected >= len(filtered):
+                    selected = max(0, len(filtered) - 1)
+
+                visible_items = min(max_visible_items, max(1, len(filtered)))
+                palette_height = visible_items + 4
+
+                if selected < scroll:
+                    scroll = selected
+                elif selected >= scroll + visible_items:
+                    scroll = selected - visible_items + 1
+                scroll = max(0, scroll)
+
+                # Dim the full background first.
+                if self.use_true_color:
+                    for y in range(height):
+                        tc_addstr(self.stdscr, y, 0, ' ' * width, bg=THEME['shadow'])
+                else:
+                    dim_attr = curses.color_pair(44) if self.has_256_colors else curses.A_DIM
+                    for y in range(height):
+                        try:
+                            self.stdscr.addstr(y, 0, ' ' * width, dim_attr)
+                        except curses.error:
+                            pass
+
+                if self.use_true_color:
+                    for dy in range(palette_height):
+                        tc_addstr(self.stdscr, start_y + dy, start_x, ' ' * palette_width, bg=THEME['bg_overlay'])
+                else:
+                    body = curses.color_pair(40) if self.has_256_colors else curses.color_pair(7)
+                    for dy in range(palette_height):
+                        try:
+                            self.stdscr.addstr(start_y + dy, start_x, ' ' * palette_width, body)
+                        except curses.error:
+                            pass
+
+                # Border
+                top = ICONS['box_tl'] + ICONS['box_h'] * (palette_width - 2) + ICONS['box_tr']
+                bot = ICONS['box_bl'] + ICONS['box_h'] * (palette_width - 2) + ICONS['box_br']
+                sep = ICONS['box_t_right'] + ICONS['box_h'] * (palette_width - 2) + ICONS['box_t_left']
+
+                if self.use_true_color:
+                    tc_addstr(self.stdscr, start_y, start_x, top, fg=THEME['border_accent'], bg=THEME['bg_overlay'])
+                    tc_addstr(self.stdscr, start_y + palette_height - 1, start_x, bot, fg=THEME['border_accent'], bg=THEME['bg_overlay'])
+                    tc_addstr(self.stdscr, start_y + 2, start_x, sep, fg=THEME['border_accent'], bg=THEME['bg_overlay'])
+                    for dy in range(1, palette_height - 1):
+                        tc_addstr(self.stdscr, start_y + dy, start_x, ICONS['box_v'], fg=THEME['border_accent'], bg=THEME['bg_overlay'])
+                        tc_addstr(self.stdscr, start_y + dy, start_x + palette_width - 1, ICONS['box_v'], fg=THEME['border_accent'], bg=THEME['bg_overlay'])
+                else:
+                    border = curses.color_pair(43) if self.has_256_colors else curses.color_pair(7)
+                    try:
+                        self.stdscr.addstr(start_y, start_x, top, border)
+                        self.stdscr.addstr(start_y + palette_height - 1, start_x, bot, border)
+                        self.stdscr.addstr(start_y + 2, start_x, sep, border)
+                    except curses.error:
+                        pass
+                    for dy in range(1, palette_height - 1):
+                        try:
+                            self.stdscr.addstr(start_y + dy, start_x, ICONS['box_v'], border)
+                            self.stdscr.addstr(start_y + dy, start_x + palette_width - 1, ICONS['box_v'], border)
+                        except curses.error:
+                            pass
+
+                prompt_icon = ICONS['search'] if mode == 'search' else ':'
+                placeholder = 'Type to search...' if mode == 'search' else 'Type a command...'
+                query_text = query if query else placeholder
+                input_line = f"  {prompt_icon}  {query_text}"
+
+                if self.use_true_color:
+                    tc_addstr(
+                        self.stdscr,
+                        start_y + 1,
+                        start_x + 1,
+                        input_line[:palette_width - 2].ljust(palette_width - 2),
+                        fg=THEME['text_primary'] if query else THEME['text_dim'],
+                        bg=THEME['bg_overlay'],
+                    )
+                else:
+                    attr = (curses.color_pair(11) if self.has_256_colors else curses.A_BOLD)
+                    try:
+                        self.stdscr.addstr(start_y + 1, start_x + 1, input_line[:palette_width - 2].ljust(palette_width - 2), attr)
+                    except curses.error:
+                        pass
+
+                list_y = start_y + 3
+                if not filtered:
+                    msg = 'No results'
+                    if self.use_true_color:
+                        tc_addstr(self.stdscr, list_y, start_x + 2, msg[:palette_width - 4], fg=THEME['text_dim'], bg=THEME['bg_overlay'])
+                    else:
+                        try:
+                            self.stdscr.addstr(list_y, start_x + 2, msg[:palette_width - 4], curses.color_pair(14))
+                        except curses.error:
+                            pass
+                else:
+                    visible_slice = filtered[scroll:scroll + visible_items]
+                    for i, item in enumerate(visible_slice):
+                        row_y = list_y + i
+                        is_selected = (scroll + i) == selected
+
+                        if mode == 'command':
+                            item_icon = item['icon'] or ' '
+                            key_badge = item['key']
+                            label = item['label']
+                            prefix = '► ' if is_selected else '  '
+                            text = f"{prefix}{item_icon}  {label}"
+                        else:
+                            item_icon = self.get_file_icon(item) or ' '
+                            key_badge = ''
+                            prefix = '► ' if is_selected else '  '
+                            text = f"{prefix}{item_icon}  {item['name']}"
+
+                        if self.use_true_color:
+                            bg = THEME['bg_selection_accent'] if is_selected else THEME['bg_overlay']
+                            fg = THEME['text_primary'] if is_selected else THEME['text_secondary']
+                            tc_addstr(self.stdscr, row_y, start_x + 1, text[:palette_width - 2].ljust(palette_width - 2), fg=fg, bg=bg, bold=is_selected)
+                            if key_badge:
+                                key_x = start_x + palette_width - len(key_badge) - 3
+                                tc_addstr(self.stdscr, row_y, key_x, key_badge, fg=THEME['text_dim'], bg=bg)
+                        else:
+                            attr = (curses.color_pair(7) | curses.A_BOLD) if is_selected else curses.color_pair(14)
+                            try:
+                                self.stdscr.addstr(row_y, start_x + 1, text[:palette_width - 2].ljust(palette_width - 2), attr)
+                                if key_badge:
+                                    key_x = start_x + palette_width - len(key_badge) - 3
+                                    self.stdscr.addstr(row_y, key_x, key_badge, curses.color_pair(14))
+                            except curses.error:
+                                pass
+
+                cursor_x = min(start_x + palette_width - 3, start_x + 5 + len(query))
+                try:
+                    self.stdscr.move(start_y + 1, cursor_x)
+                except curses.error:
+                    pass
+
+                self.stdscr.refresh()
+                key = self.stdscr.getch()
+
+                if key in [27]:
+                    break
+                if key in [ord('\n'), curses.KEY_ENTER, 10, 13]:
+                    if not filtered:
+                        continue
+                    picked = filtered[selected]
+                    if mode == 'command':
+                        self._execute_palette_action(picked['action'])
+                    else:
+                        target_path = picked['path']
+                        for idx, entry in enumerate(self.entries):
+                            if entry['path'] == target_path:
+                                self.selected_index = idx
+                                break
+                    break
+                if key in [curses.KEY_UP]:
+                    selected = max(0, selected - 1)
+                    continue
+                if key in [curses.KEY_DOWN]:
+                    selected = min(max(0, len(filtered) - 1), selected + 1)
+                    continue
+                if key in [curses.KEY_BACKSPACE, 127, 8]:
+                    query = query[:-1]
+                    continue
+                if 32 <= key <= 126:
+                    query += chr(key)
+        finally:
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
+            self.draw()
     
-    def show_message_box(self, title, lines, wait_for_key=True):
+    def show_message_box(self, title, lines, wait_for_key=True, style='normal'):
         """Show a styled message box overlay"""
         height, width = self.stdscr.getmaxyx()
         
+        line_max = max((len(line) for line in lines), default=0)
         box_height = len(lines) + 6
-        box_width = min(width - 4, max(len(title) + 6, max(len(line) for line in lines) + 6))
+        box_width = min(width - 4, max(len(title) + 6, line_max + 6))
         
         start_y = (height - box_height) // 2
         start_x = (width - box_width) // 2
+
+        if self.use_true_color:
+            dim_bg = THEME['shadow']
+            for y in range(height):
+                tc_addstr(self.stdscr, y, 0, ' ' * width, bg=dim_bg)
+
+            small_w = max(10, int(box_width * 0.8))
+            small_h = max(5, int(box_height * 0.8))
+            small_x = (width - small_w) // 2
+            small_y = (height - small_h) // 2
+            for dy in range(small_h):
+                tc_addstr(self.stdscr, small_y + dy, small_x, ' ' * small_w, bg=THEME['bg_overlay'])
+            self.stdscr.refresh()
+            curses.napms(20)
+
+            border_fg = THEME['accent_rose'] if style == 'danger' else THEME['border_accent']
+            title_fg = THEME['accent_primary']
+
+            if style == 'danger':
+                tl, tr, bl, br = ICONS['dbox_tl'], ICONS['dbox_tr'], ICONS['dbox_bl'], ICONS['dbox_br']
+                hch, vch = ICONS['dbox_h'], ICONS['dbox_v']
+                t_right, t_left = ICONS['dbox_t_right'], ICONS['dbox_t_left']
+            else:
+                tl, tr, bl, br = ICONS['box_tl'], ICONS['box_tr'], ICONS['box_bl'], ICONS['box_br']
+                hch, vch = ICONS['box_h'], ICONS['box_v']
+                t_right, t_left = ICONS['box_t_right'], ICONS['box_t_left']
+
+            for dy in range(box_height):
+                tc_addstr(self.stdscr, start_y + dy, start_x, ' ' * box_width, bg=THEME['bg_overlay'])
+
+            top = tl + hch * (box_width - 2) + tr
+            bot = bl + hch * (box_width - 2) + br
+            sep = t_right + hch * (box_width - 2) + t_left
+
+            tc_addstr(self.stdscr, start_y, start_x, top, fg=border_fg, bg=THEME['bg_overlay'])
+            tc_addstr(self.stdscr, start_y + box_height - 1, start_x, bot, fg=border_fg, bg=THEME['bg_overlay'])
+            for dy in range(1, box_height - 1):
+                tc_addstr(self.stdscr, start_y + dy, start_x, vch, fg=border_fg, bg=THEME['bg_overlay'])
+                tc_addstr(self.stdscr, start_y + dy, start_x + box_width - 1, vch, fg=border_fg, bg=THEME['bg_overlay'])
+
+            title_icon = ICONS['warning'] if style == 'danger' else ICONS['info']
+            title_text = f" {title_icon}  {title} "
+            title_pad = (box_width - 2 - len(title_text)) // 2
+            tc_addstr(self.stdscr, start_y + 1, start_x + 1 + max(0, title_pad), title_text[:box_width - 4], fg=title_fg, bg=THEME['bg_overlay'], bold=True)
+            tc_addstr(self.stdscr, start_y + 2, start_x, sep, fg=border_fg, bg=THEME['bg_overlay'])
+
+            for i, line in enumerate(lines):
+                tc_addstr(self.stdscr, start_y + 3 + i, start_x + 3, line[:box_width - 6], fg=THEME['text_primary'], bg=THEME['bg_overlay'])
+
+            if wait_for_key:
+                prompt = 'Press any key to continue...'
+                tc_addstr(self.stdscr, start_y + box_height - 2, start_x + 3, prompt[:box_width - 6], fg=THEME['text_dim'], bg=THEME['bg_overlay'])
+
+            self.stdscr.refresh()
+            if wait_for_key:
+                self.stdscr.getch()
+            return
         
         popup_body = curses.color_pair(40) if self.has_256_colors else curses.color_pair(7)
-        popup_border = curses.color_pair(43) if self.has_256_colors else curses.color_pair(7)
+        popup_border = (curses.color_pair(41) if style == 'danger' else curses.color_pair(43)) if self.has_256_colors else curses.color_pair(7)
         popup_title = curses.color_pair(41) if self.has_256_colors else curses.color_pair(7)
         shadow_color = curses.color_pair(44) if self.has_256_colors else 0
+
+        if self.has_256_colors:
+            for y in range(height):
+                try:
+                    self.stdscr.addstr(y, 0, ' ' * width, shadow_color)
+                except curses.error:
+                    pass
+
+        if style == 'danger':
+            tl, tr, bl, br = ICONS['dbox_tl'], ICONS['dbox_tr'], ICONS['dbox_bl'], ICONS['dbox_br']
+            hch, vch = ICONS['dbox_h'], ICONS['dbox_v']
+            t_right, t_left = ICONS['dbox_t_right'], ICONS['dbox_t_left']
+        else:
+            tl, tr, bl, br = ICONS['box_tl'], ICONS['box_tr'], ICONS['box_bl'], ICONS['box_br']
+            hch, vch = ICONS['box_h'], ICONS['box_v']
+            t_right, t_left = ICONS['box_t_right'], ICONS['box_t_left']
         
         # Shadow
         if self.has_256_colors:
@@ -1199,8 +3025,8 @@ class FileManager:
                 pass
         
         # Border
-        top = ICONS['box_tl'] + ICONS['box_h'] * (box_width - 2) + ICONS['box_tr']
-        bot = ICONS['box_bl'] + ICONS['box_h'] * (box_width - 2) + ICONS['box_br']
+        top = tl + hch * (box_width - 2) + tr
+        bot = bl + hch * (box_width - 2) + br
         try:
             self.stdscr.addstr(start_y, start_x, top, popup_border)
             self.stdscr.addstr(start_y + box_height - 1, start_x, bot, popup_border)
@@ -1208,13 +3034,14 @@ class FileManager:
             pass
         for dy in range(1, box_height - 1):
             try:
-                self.stdscr.addstr(start_y + dy, start_x, ICONS['box_v'], popup_border)
-                self.stdscr.addstr(start_y + dy, start_x + box_width - 1, ICONS['box_v'], popup_border)
+                self.stdscr.addstr(start_y + dy, start_x, vch, popup_border)
+                self.stdscr.addstr(start_y + dy, start_x + box_width - 1, vch, popup_border)
             except curses.error:
                 pass
         
         # Title
-        title_text = f" {ICONS['info']}  {title} "
+        title_icon = ICONS['warning'] if style == 'danger' else ICONS['info']
+        title_text = f" {title_icon}  {title} "
         title_pad = (box_width - 2 - len(title_text)) // 2
         try:
             self.stdscr.addstr(start_y + 1, start_x + 1 + max(0, title_pad), title_text[:box_width-4], popup_title | curses.A_BOLD)
@@ -1222,7 +3049,7 @@ class FileManager:
             pass
         
         # Separator
-        sep = ICONS['box_t_right'] + ICONS['box_h'] * (box_width - 2) + ICONS['box_t_left']
+        sep = t_right + hch * (box_width - 2) + t_left
         try:
             self.stdscr.addstr(start_y + 2, start_x, sep, popup_border)
         except curses.error:
@@ -1258,6 +3085,66 @@ class FileManager:
         
         start_y = (height - box_height) // 2
         start_x = (width - box_width) // 2
+
+        if self.use_true_color:
+            for y in range(height):
+                tc_addstr(self.stdscr, y, 0, ' ' * width, bg=THEME['shadow'])
+
+            for dy in range(box_height):
+                tc_addstr(self.stdscr, start_y + dy, start_x, ' ' * box_width, bg=THEME['bg_overlay'])
+
+            top = ICONS['box_tl'] + ICONS['box_h'] * (box_width - 2) + ICONS['box_tr']
+            bot = ICONS['box_bl'] + ICONS['box_h'] * (box_width - 2) + ICONS['box_br']
+            tc_addstr(self.stdscr, start_y, start_x, top, fg=THEME['border_accent'], bg=THEME['bg_overlay'])
+            tc_addstr(self.stdscr, start_y + box_height - 1, start_x, bot, fg=THEME['border_accent'], bg=THEME['bg_overlay'])
+            for dy in range(1, box_height - 1):
+                tc_addstr(self.stdscr, start_y + dy, start_x, ICONS['box_v'], fg=THEME['border_accent'], bg=THEME['bg_overlay'])
+                tc_addstr(self.stdscr, start_y + dy, start_x + box_width - 1, ICONS['box_v'], fg=THEME['border_accent'], bg=THEME['bg_overlay'])
+
+            title_text = f" {ICONS['gear']}  {title} "
+            title_pad = (box_width - 2 - len(title_text)) // 2
+            tc_addstr(self.stdscr, start_y + 1, start_x + 1 + max(0, title_pad), title_text[:box_width - 4], fg=THEME['accent_primary'], bg=THEME['bg_overlay'], bold=True)
+
+            progress_text = f"Item {item_num} of {total_items}"
+            tc_addstr(self.stdscr, start_y + 3, start_x + 3, progress_text[:box_width - 6], fg=THEME['text_primary'], bg=THEME['bg_overlay'])
+
+            max_name_len = box_width - 8
+            display_name = ("..." + current_item[-(max_name_len - 3):]) if len(current_item) > max_name_len else current_item
+            tc_addstr(self.stdscr, start_y + 4, start_x + 3, display_name[:box_width - 6], fg=THEME['text_primary'], bg=THEME['bg_overlay'])
+
+            bar_width = box_width - 10
+            if total_items > 0:
+                item_progress = item_num / total_items
+                filled = int(bar_width * item_progress)
+                percent = int(item_progress * 100)
+
+                fill_bar = ICONS['prog_full'] * filled
+                head = ICONS['prog_head'] if filled < bar_width else ''
+                empty_bar = ICONS['prog_empty'] * max(0, bar_width - filled - (1 if head else 0))
+                tc_addstr(self.stdscr, start_y + 6, start_x + 3, (fill_bar + head), fg=THEME['accent_primary'], bg=THEME['bg_overlay'], bold=True)
+                if empty_bar:
+                    tc_addstr(self.stdscr, start_y + 6, start_x + 3 + len(fill_bar + head), empty_bar, fg=THEME['border_subtle'], bg=THEME['bg_overlay'])
+                tc_addstr(self.stdscr, start_y + 6, start_x + 3 + bar_width + 1, f" {percent:3d}%", fg=THEME['accent_primary'], bg=THEME['bg_overlay'], bold=True)
+
+            if bytes_total > 0:
+                bytes_progress = bytes_done / bytes_total if bytes_total > 0 else 0
+                filled = int(bar_width * bytes_progress)
+                percent = int(bytes_progress * 100)
+                done_str = self.get_size_string(bytes_done).strip()
+                total_str = self.get_size_string(bytes_total).strip()
+
+                tc_addstr(self.stdscr, start_y + 8, start_x + 3, f"File: {done_str} / {total_str}"[:box_width - 6], fg=THEME['text_primary'], bg=THEME['bg_overlay'])
+                fill_bar = ICONS['prog_full'] * filled
+                head = ICONS['prog_head'] if filled < bar_width else ''
+                empty_bar = ICONS['prog_empty'] * max(0, bar_width - filled - (1 if head else 0))
+                tc_addstr(self.stdscr, start_y + 9, start_x + 3, (fill_bar + head), fg=THEME['accent_primary'], bg=THEME['bg_overlay'], bold=True)
+                if empty_bar:
+                    tc_addstr(self.stdscr, start_y + 9, start_x + 3 + len(fill_bar + head), empty_bar, fg=THEME['border_subtle'], bg=THEME['bg_overlay'])
+                tc_addstr(self.stdscr, start_y + 9, start_x + 3 + bar_width + 1, f" {percent:3d}%", fg=THEME['accent_primary'], bg=THEME['bg_overlay'], bold=True)
+
+            self.stdscr.refresh()
+            curses.napms(1)
+            return
         
         popup_body = curses.color_pair(40) if self.has_256_colors else curses.color_pair(7)
         popup_border = curses.color_pair(43) if self.has_256_colors else curses.color_pair(7)
@@ -1266,6 +3153,13 @@ class FileManager:
         prog_empty = curses.color_pair(56) if self.has_256_colors else curses.color_pair(7)
         prog_text = curses.color_pair(57) if self.has_256_colors else curses.color_pair(7)
         shadow_color = curses.color_pair(44) if self.has_256_colors else 0
+
+        if self.has_256_colors:
+            for y in range(height):
+                try:
+                    self.stdscr.addstr(y, 0, ' ' * width, shadow_color)
+                except curses.error:
+                    pass
         
         # Shadow
         if self.has_256_colors:
@@ -2289,7 +4183,13 @@ class FileManager:
         # Determine what to delete
         if self.selected_files:
             files_to_delete = list(self.selected_files)
-            confirm_msg = f"Delete {len(files_to_delete)} marked file(s)? (y/n)"
+            confirm_title = "DELETE FILES"
+            confirm_lines = [
+                f"Delete {len(files_to_delete)} marked file(s)?",
+                "This cannot be undone.",
+                "",
+                "Press Y to confirm, any other key to cancel.",
+            ]
         else:
             if not self.entries or self.selected_index >= len(self.entries):
                 return
@@ -2299,14 +4199,15 @@ class FileManager:
                 self.message_color = curses.COLOR_YELLOW
                 return
             files_to_delete = [entry['path']]
-            confirm_msg = f"Delete '{entry['name']}'? (y/n)"
-        
-        # Show confirmation
-        height, width = self.stdscr.getmaxyx()
-        self.stdscr.attron(curses.color_pair(9) | curses.A_BOLD)
-        self.stdscr.addstr(height - 1, 1, confirm_msg[:width-2])
-        self.stdscr.attroff(curses.color_pair(9) | curses.A_BOLD)
-        self.stdscr.refresh()
+            confirm_title = "DELETE FILE"
+            confirm_lines = [
+                f"Delete '{entry['name']}'?",
+                "This cannot be undone.",
+                "",
+                "Press Y to confirm, any other key to cancel.",
+            ]
+
+        self.show_message_box(confirm_title, confirm_lines, wait_for_key=False, style='danger')
         
         key = self.stdscr.getch()
         if key not in [ord('y'), ord('Y')]:
@@ -2980,13 +4881,17 @@ class FileManager:
             self.message_color = curses.COLOR_YELLOW
             return
         
-        # Confirm
-        height, width = self.stdscr.getmaxyx()
-        confirm_msg = f"DELETE ALL {len(files)} FILES in this folder? (y/n)"
-        self.stdscr.attron(curses.color_pair(9) | curses.A_BOLD)
-        self.stdscr.addstr(height - 1, 1, confirm_msg[:width-2])
-        self.stdscr.attroff(curses.color_pair(9) | curses.A_BOLD)
-        self.stdscr.refresh()
+        self.show_message_box(
+            "DELETE ALL FILES",
+            [
+                f"Delete all {len(files)} file(s) in this folder?",
+                "This cannot be undone.",
+                "",
+                "Press Y to confirm, any other key to cancel.",
+            ],
+            wait_for_key=False,
+            style='danger',
+        )
         
         key = self.stdscr.getch()
         if key not in [ord('y'), ord('Y')]:
@@ -4176,6 +6081,70 @@ class FileManager:
             # Clear message on any key
             if self.message:
                 self.message = ""
+
+            sidebar_handled = False
+            if self.active_panel == 'sidebar' and self.show_sidebar:
+                if key == curses.KEY_UP:
+                    if self.sidebar_items:
+                        self.sidebar_selected = max(0, self.sidebar_selected - 1)
+                    sidebar_handled = True
+                elif key == curses.KEY_DOWN:
+                    if self.sidebar_items:
+                        self.sidebar_selected = min(len(self.sidebar_items) - 1, self.sidebar_selected + 1)
+                    sidebar_handled = True
+                elif key in [ord('\n'), curses.KEY_ENTER, 10, 13]:
+                    if self.sidebar_items:
+                        item_type, item_data, _indent = self.sidebar_items[self.sidebar_selected]
+                        if item_type == 'quick':
+                            target = item_data['path']
+                            target_resolved = target.resolve()
+                            home = Path.home().resolve()
+                            if target_resolved == home or home in target_resolved.parents:
+                                path_cursor = home
+                                self.tree_expanded[str(path_cursor)] = True
+                                for part in target_resolved.relative_to(home).parts:
+                                    path_cursor = path_cursor / part
+                                    self.tree_expanded[str(path_cursor.resolve())] = True
+                            self.change_directory(target)
+                        elif item_type == 'tree':
+                            path = item_data['path']
+                            path_key = str(path.resolve())
+                            if not self.tree_expanded.get(path_key, False):
+                                self.tree_expanded[path_key] = True
+                                self._build_tree()
+                            else:
+                                home = Path.home().resolve()
+                                target_resolved = path.resolve()
+                                if target_resolved == home or home in target_resolved.parents:
+                                    path_cursor = home
+                                    self.tree_expanded[str(path_cursor)] = True
+                                    for part in target_resolved.relative_to(home).parts:
+                                        path_cursor = path_cursor / part
+                                        self.tree_expanded[str(path_cursor.resolve())] = True
+                                self.change_directory(path)
+                    sidebar_handled = True
+                elif key == curses.KEY_LEFT:
+                    if self.sidebar_items:
+                        item_type, item_data, _indent = self.sidebar_items[self.sidebar_selected]
+                        if item_type == 'tree':
+                            path_key = str(item_data['path'].resolve())
+                            self.tree_expanded[path_key] = False
+                            self._build_tree()
+                    sidebar_handled = True
+                elif key == curses.KEY_RIGHT:
+                    if self.sidebar_items:
+                        item_type, item_data, _indent = self.sidebar_items[self.sidebar_selected]
+                        if item_type == 'tree':
+                            path_key = str(item_data['path'].resolve())
+                            self.tree_expanded[path_key] = True
+                            self._build_tree()
+                    sidebar_handled = True
+                elif key == ord(']') or key == 27:
+                    self.active_panel = 'files'
+                    sidebar_handled = True
+
+            if sidebar_handled:
+                continue
             
             if key == curses.KEY_UP:
                 self.selected_index = max(0, self.selected_index - 1)
@@ -4202,10 +6171,42 @@ class FileManager:
             elif key == ord('?'):
                 # Toggle help
                 self.show_help = not self.show_help
+
+            elif key == curses.KEY_RESIZE:
+                try:
+                    if self.kitty.has_graphics:
+                        kitty_delete_images()
+                except Exception:
+                    pass
+                self.stdscr.clear()
+                self.preview_cache = {'path': None, 'content': None, 'image_id': 0}
+
+            elif key == ord('/'):
+                # Floating search palette
+                self.show_command_palette(mode='search')
+
+            elif key == ord(':'):
+                # Floating command palette
+                self.show_command_palette(mode='command')
             
             elif key == ord('q'):
                 # Quit
                 self.running = False
+
+            elif key == ord('\t'):
+                # Toggle sidebar panel visibility
+                self.show_sidebar = not self.show_sidebar
+                if not self.show_sidebar and self.active_panel == 'sidebar':
+                    self.active_panel = 'files'
+
+            elif key == ord('['):
+                # Focus sidebar when visible
+                if self.show_sidebar:
+                    self.active_panel = 'sidebar'
+
+            elif key == ord('P'):
+                # Toggle preview panel visibility
+                self.show_preview = not self.show_preview
             
             elif key == ord('b'):
                 # Bookmarks
@@ -4290,6 +6291,7 @@ class AudioInspector:
         self.compare_file = None
         self.compare_info = None
         self.show_comparison = False
+        self._art_attempted = False
         
         # Inherit 256-color state
         self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
@@ -4534,6 +6536,9 @@ class AudioInspector:
         if bitrate < 1000:
             return f"{bitrate} bps"
         return f"{bitrate / 1000:.0f} kbps"
+
+    def _use_true_color(self):
+        return bool(self.file_manager and getattr(self.file_manager, 'use_true_color', False))
     
     def draw_header(self):
         """Draw header"""
@@ -4728,6 +6733,99 @@ class AudioInspector:
     def draw_single_view(self):
         """Draw single file view"""
         height, width = self.stdscr.getmaxyx()
+
+        if self._use_true_color() and self.audio_info and 'error' not in self.audio_info:
+            panel_width = min(78, width - 4)
+            panel_height = min(max(14, height - 7), 20)
+            start_x = max(2, (width - panel_width) // 2)
+            start_y = 3
+
+            for dy in range(panel_height):
+                tc_addstr(self.stdscr, start_y + dy, start_x, ' ' * panel_width, bg=THEME['bg_surface'])
+
+            info = self.audio_info
+            score = self.get_quality_score(info)
+            score_label = self.get_quality_label(score)[0]
+
+            filename = info['filename']
+            max_name = max(10, panel_width - 28)
+            if len(filename) > max_name:
+                filename = filename[:max_name - 3] + "..."
+
+            tc_addstr(self.stdscr, start_y + 1, start_x + 2, f"{ICONS['music']} {filename}", fg=THEME['text_primary'], bg=THEME['bg_surface'], bold=True)
+
+            fmt = info.get('format_name', '').split(',')[0].upper() or info.get('codec', 'N/A').upper()
+            if fmt == 'FLAC':
+                badge_fg, badge_bg = THEME['accent_green'], (34, 68, 40)
+            elif fmt == 'MP3':
+                badge_fg, badge_bg = THEME['accent_orange'], (78, 58, 36)
+            else:
+                badge_fg, badge_bg = THEME['accent_blue'], (42, 58, 92)
+            badge_txt = f" {fmt} "
+            tc_addstr(self.stdscr, start_y + 1, start_x + panel_width - len(badge_txt) - 3, badge_txt, fg=badge_fg, bg=badge_bg, bold=True)
+
+            tc_addstr(self.stdscr, start_y + 3, start_x + 2, f"Quality: {score}/100 ({score_label})", fg=THEME['text_primary'], bg=THEME['bg_surface'], bold=True)
+            bar_len = min(30, max(10, panel_width - 28))
+            filled = int((score / 100.0) * bar_len)
+            for i in range(bar_len):
+                t = i / max(1, bar_len - 1)
+                if t < 0.5:
+                    t2 = t * 2.0
+                    color = (
+                        int(THEME['accent_rose'][0] * (1 - t2) + THEME['accent_warm'][0] * t2),
+                        int(THEME['accent_rose'][1] * (1 - t2) + THEME['accent_warm'][1] * t2),
+                        int(THEME['accent_rose'][2] * (1 - t2) + THEME['accent_warm'][2] * t2),
+                    )
+                else:
+                    t2 = (t - 0.5) * 2.0
+                    color = (
+                        int(THEME['accent_warm'][0] * (1 - t2) + THEME['accent_green'][0] * t2),
+                        int(THEME['accent_warm'][1] * (1 - t2) + THEME['accent_green'][1] * t2),
+                        int(THEME['accent_warm'][2] * (1 - t2) + THEME['accent_green'][2] * t2),
+                    )
+                ch = '█' if i < filled else '░'
+                tc_addstr(self.stdscr, start_y + 4, start_x + 2 + i, ch, fg=color, bg=THEME['bg_surface'])
+
+            tc_addstr(self.stdscr, start_y + 6, start_x + 2, f"Bitrate: {self.format_bitrate(info.get('bit_rate', 0))}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, start_y + 7, start_x + 2, f"Sample Rate: {info.get('sample_rate', 0):,} Hz", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, start_y + 8, start_x + 2, f"Bit Depth: {info.get('bit_depth', 'N/A')}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, start_y + 9, start_x + 2, f"Duration: {self.format_duration(info.get('duration', 0.0))}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, start_y + 10, start_x + 2, f"Size: {self.format_size(info.get('file_size', 0))}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+
+            waves = "⠀⡀⡄⡆⡇⣇⣧⣷⣿"
+            wave_len = min(40, max(16, panel_width - 26))
+            base = int(info.get('bit_rate', 0) // 1000) + int(info.get('duration', 0))
+            wave = []
+            for i in range(wave_len):
+                level = (base + (i * i * 7) + (i * 13)) % len(waves)
+                wave.append(waves[level])
+            tc_addstr(self.stdscr, start_y + 12, start_x + 2, "Waveform:", fg=THEME['text_dim'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, start_y + 12, start_x + 12, ''.join(wave), fg=THEME['accent_blue'], bg=THEME['bg_surface'])
+
+            if (
+                not self._art_attempted
+                and self.file_manager
+                and self.file_manager.kitty.has_graphics
+                and shutil.which('ffmpeg')
+            ):
+                self._art_attempted = True
+                art_cols = min(20, max(10, panel_width // 3))
+                art_rows = min(10, max(6, panel_height // 2))
+                art_x = start_x + panel_width - art_cols - 2
+                art_y = start_y + 2
+                tmp = tempfile.mktemp(suffix='.jpg')
+                try:
+                    subprocess.run(
+                        ['ffmpeg', '-i', str(self.filepath), '-an', '-vcodec', 'copy', tmp, '-y'],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    if os.path.exists(tmp) and os.path.getsize(tmp) > 100:
+                        kitty_send_image(tmp, art_x, art_y, art_cols, art_rows)
+                finally:
+                    if os.path.exists(tmp):
+                        os.unlink(tmp)
+            return
         
         # Center the info panel
         panel_width = min(60, width - 4)
@@ -4738,6 +6836,12 @@ class AudioInspector:
     def draw(self):
         """Draw the inspector interface"""
         self.stdscr.clear()
+        if self._use_true_color():
+            height, width = self.stdscr.getmaxyx()
+            for y in range(height):
+                tc_addstr(self.stdscr, y, 0, ' ' * width, bg=THEME['bg_base'])
+        if self.show_comparison and self.file_manager and self.file_manager.kitty.has_graphics:
+            kitty_delete_images()
         self.draw_header()
         
         if self.show_comparison and self.compare_info:
@@ -4855,6 +6959,9 @@ class AudioInspector:
                     # Start comparison
                     self.browse_for_comparison()
 
+        if self.file_manager and self.file_manager.kitty.has_graphics:
+            kitty_delete_images()
+
 
 class VideoInspector:
     """Video file quality inspector with comparison capabilities"""
@@ -4870,6 +6977,7 @@ class VideoInspector:
         self.compare_file = None
         self.compare_info = None
         self.show_comparison = False
+        self._thumb_attempted = False
         
         # Inherit 256-color state
         self.has_256_colors = curses.COLORS >= 256 and curses.can_change_color()
@@ -5199,6 +7307,9 @@ class VideoInspector:
         elif bitrate >= 1000:
             return f"{bitrate / 1000:.0f} kbps"
         return f"{bitrate} bps"
+
+    def _use_true_color(self):
+        return bool(self.file_manager and getattr(self.file_manager, 'use_true_color', False))
     
     def draw_header(self):
         """Draw header"""
@@ -5413,6 +7524,72 @@ class VideoInspector:
     def draw_single_view(self):
         """Draw single file view"""
         height, width = self.stdscr.getmaxyx()
+
+        if self._use_true_color() and self.video_info and 'error' not in self.video_info:
+            panel_width = min(90, width - 4)
+            panel_height = min(max(16, height - 7), 24)
+            start_x = max(2, (width - panel_width) // 2)
+            start_y = 3
+
+            for dy in range(panel_height):
+                tc_addstr(self.stdscr, start_y + dy, start_x, ' ' * panel_width, bg=THEME['bg_surface'])
+
+            info = self.video_info
+            score = self.get_quality_score(info)
+            score_label = self.get_quality_label(score)[0]
+
+            filename = info['filename']
+            max_name = max(14, panel_width - 38)
+            if len(filename) > max_name:
+                filename = filename[:max_name - 3] + "..."
+            tc_addstr(self.stdscr, start_y + 1, start_x + 2, f"{ICONS['video']} {filename}", fg=THEME['text_primary'], bg=THEME['bg_surface'], bold=True)
+
+            h = info.get('height', 0)
+            if h >= 2160:
+                badge = ' 4K '
+                badge_fg, badge_bg = THEME['accent_green'], (34, 68, 40)
+            elif h >= 1080:
+                badge = ' 1080p '
+                badge_fg, badge_bg = THEME['accent_blue'], (42, 58, 92)
+            elif h >= 720:
+                badge = ' 720p '
+                badge_fg, badge_bg = THEME['accent_warm'], (78, 62, 34)
+            else:
+                badge = ' SD '
+                badge_fg, badge_bg = THEME['accent_orange'], (78, 58, 36)
+            tc_addstr(self.stdscr, start_y + 1, start_x + panel_width - len(badge) - 3, badge, fg=badge_fg, bg=badge_bg, bold=True)
+
+            tc_addstr(self.stdscr, start_y + 3, start_x + 2, f"Quality: {score}/100 ({score_label})", fg=THEME['text_primary'], bg=THEME['bg_surface'], bold=True)
+            tc_addstr(self.stdscr, start_y + 5, start_x + 2, f"Resolution: {info.get('resolution', 'N/A')} ({info.get('width', 0)}x{info.get('height', 0)})", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, start_y + 6, start_x + 2, f"Codec: {info.get('video_codec', 'N/A').upper()}  FPS: {info.get('fps', 0.0):.2f}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, start_y + 7, start_x + 2, f"Video Bitrate: {self.format_bitrate(info.get('video_bitrate', info.get('total_bitrate', 0)))}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, start_y + 8, start_x + 2, f"Audio: {info.get('audio_codec', 'N/A').upper()} @ {self.format_bitrate(info.get('audio_bitrate', 0))}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, start_y + 9, start_x + 2, f"Duration: {self.format_duration(info.get('duration', 0.0))}  Size: {self.format_size(info.get('file_size', 0))}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+
+            if (
+                not self._thumb_attempted
+                and self.file_manager
+                and self.file_manager.kitty.has_graphics
+                and shutil.which('ffmpeg')
+            ):
+                self._thumb_attempted = True
+                thumb_cols = min(30, max(16, panel_width // 3))
+                thumb_rows = min(15, max(8, panel_height // 2))
+                thumb_x = start_x + panel_width - thumb_cols - 2
+                thumb_y = start_y + 3
+                tmp = tempfile.mktemp(suffix='.jpg')
+                try:
+                    subprocess.run(
+                        ['ffmpeg', '-ss', '5', '-i', str(self.filepath), '-vf', 'thumbnail', '-frames:v', '1', tmp, '-y'],
+                        capture_output=True,
+                        timeout=10,
+                    )
+                    if os.path.exists(tmp) and os.path.getsize(tmp) > 100:
+                        kitty_send_image(tmp, thumb_x, thumb_y, thumb_cols, thumb_rows)
+                finally:
+                    if os.path.exists(tmp):
+                        os.unlink(tmp)
+            return
         
         # Center the info panel
         panel_width = min(60, width - 4)
@@ -5423,6 +7600,12 @@ class VideoInspector:
     def draw(self):
         """Draw the inspector interface"""
         self.stdscr.clear()
+        if self._use_true_color():
+            height, width = self.stdscr.getmaxyx()
+            for y in range(height):
+                tc_addstr(self.stdscr, y, 0, ' ' * width, bg=THEME['bg_base'])
+        if self.show_comparison and self.file_manager and self.file_manager.kitty.has_graphics:
+            kitty_delete_images()
         self.draw_header()
         
         if self.show_comparison and self.compare_info:
@@ -5539,6 +7722,9 @@ class VideoInspector:
                 else:
                     # Start comparison
                     self.browse_for_comparison()
+
+        if self.file_manager and self.file_manager.kitty.has_graphics:
+            kitty_delete_images()
 
 
 class ImageInspector:
@@ -5880,6 +8066,9 @@ class ImageInspector:
                 return f"{size_bytes:.2f} {unit}"
             size_bytes /= 1024.0
         return f"{size_bytes:.2f} TB"
+
+    def _use_true_color(self):
+        return bool(self.file_manager and getattr(self.file_manager, 'use_true_color', False))
     
     def draw_header(self):
         """Draw header"""
@@ -6073,6 +8262,36 @@ class ImageInspector:
     def draw_single_view(self):
         """Draw single file view"""
         height, width = self.stdscr.getmaxyx()
+
+        if self._use_true_color() and self.image_info and 'error' not in self.image_info:
+            panel_width = min(width - 4, 96)
+            panel_height = max(10, height - 6)
+            start_x = max(2, (width - panel_width) // 2)
+            start_y = 3
+
+            for dy in range(panel_height):
+                tc_addstr(self.stdscr, start_y + dy, start_x, ' ' * panel_width, bg=THEME['bg_surface'])
+
+            info = self.image_info
+            title = info.get('filename', self.filepath.name)
+            if len(title) > panel_width - 6:
+                title = title[:panel_width - 9] + '...'
+            tc_addstr(self.stdscr, start_y + 1, start_x + 2, f"{ICONS['image']} {title}", fg=THEME['text_primary'], bg=THEME['bg_surface'], bold=True)
+
+            img_cols = min(40, max(20, panel_width - 10))
+            img_rows = min(20, max(8, panel_height - 12))
+            img_x = start_x + (panel_width - img_cols) // 2
+            img_y = start_y + 2
+
+            if self.file_manager and self.file_manager.kitty.has_graphics:
+                kitty_send_image(str(self.filepath), img_x, img_y, img_cols, img_rows)
+
+            exif_y = img_y + img_rows + 1
+            tc_addstr(self.stdscr, exif_y, start_x + 2, f"Dimensions: {info.get('width', 0)} x {info.get('height', 0)}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, exif_y + 1, start_x + 2, f"Format: {info.get('codec', 'N/A').upper()}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, exif_y + 2, start_x + 2, f"Color Depth: {info.get('bit_depth', 8)}-bit", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            tc_addstr(self.stdscr, exif_y + 3, start_x + 2, f"File Size: {self.format_size(info.get('file_size', 0))}", fg=THEME['text_secondary'], bg=THEME['bg_surface'])
+            return
         
         # Center the info panel
         panel_width = min(60, width - 4)
@@ -6083,6 +8302,12 @@ class ImageInspector:
     def draw(self):
         """Draw the inspector interface"""
         self.stdscr.clear()
+        if self._use_true_color():
+            height, width = self.stdscr.getmaxyx()
+            for y in range(height):
+                tc_addstr(self.stdscr, y, 0, ' ' * width, bg=THEME['bg_base'])
+        if self.show_comparison and self.file_manager and self.file_manager.kitty.has_graphics:
+            kitty_delete_images()
         self.draw_header()
         
         if self.show_comparison and self.compare_info:
@@ -6199,6 +8424,9 @@ class ImageInspector:
                 else:
                     # Start comparison
                     self.browse_for_comparison()
+
+        if self.file_manager and self.file_manager.kitty.has_graphics:
+            kitty_delete_images()
 
 
 class TextEditor:
