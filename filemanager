@@ -343,30 +343,47 @@ PALETTE_COMMANDS = [
 
 
 # ── Dynamic curses color pair allocation ──────────────────────────────
-# Maps THEME RGB tuples → curses color slots and pairs so all rendering
-# goes through curses' buffer (no raw stdout writes that get clobbered
-# by stdscr.refresh()).
+# Pre-allocates THEME colors at startup; runtime is just dict lookups.
 _tc_color_cache = {}    # RGB tuple → curses color slot
 _tc_pair_cache = {}     # (fg_slot, bg_slot) → curses pair number
 _tc_next_color_slot = 76   # Slots 16-75 are used by _setup_256_colors
 _tc_next_pair_num = 91     # Pairs 1-90 are used by _setup_256_colors
 _tc_max_color_slot = 254
-_tc_max_pair_num = 32000   # Updated at init from curses.COLOR_PAIRS
-_tc_limits_set = False
+_tc_max_pair_num = 255
+_tc_can_remap = False   # Set once at init
 
 
-def _tc_ensure_limits():
-    global _tc_max_pair_num, _tc_limits_set
-    if _tc_limits_set:
-        return
-    _tc_limits_set = True
+def _tc_init():
+    """Call once after curses.start_color(). Pre-allocates all THEME colors."""
+    global _tc_max_pair_num, _tc_can_remap
     try:
         _tc_max_pair_num = min(curses.COLOR_PAIRS - 1, 32000)
     except Exception:
         _tc_max_pair_num = 255
+    _tc_can_remap = curses.COLORS >= 256 and curses.can_change_color()
+    if not _tc_can_remap:
+        return
+    # Pre-allocate every THEME color and common pairs
+    for rgb in THEME.values():
+        if isinstance(rgb, tuple) and len(rgb) == 3:
+            _tc_get_slot(rgb)
+    # Pre-allocate common fg/bg pairs
+    all_colors = [v for v in THEME.values() if isinstance(v, tuple) and len(v) == 3]
+    common_bgs = [THEME.get(k) for k in ('bg_base', 'bg_surface', 'bg_overlay', 'bg_selection_accent',
+                                           'mark_bg', 'gradient_sel_1', 'gradient_sel_2',
+                                           'gradient_header_2', 'shadow') if k in THEME]
+    for fg_rgb in all_colors:
+        fg_s = _tc_get_slot(fg_rgb)
+        if fg_s < 0:
+            continue
+        for bg_rgb in common_bgs:
+            bg_s = _tc_get_slot(bg_rgb)
+            if bg_s >= 0:
+                _tc_get_pair(fg_s, bg_s)
+        _tc_get_pair(fg_s, -1)  # default bg
 
 
-def _tc_quantize(rgb, step=4):
+def _tc_quantize(rgb, step=8):
     """Round RGB components to reduce unique color count."""
     return (min(255, (rgb[0] // step) * step),
             min(255, (rgb[1] // step) * step),
@@ -377,8 +394,9 @@ def _tc_get_slot(rgb):
     """Get or allocate a curses color slot for an RGB tuple."""
     global _tc_next_color_slot
     q = _tc_quantize(rgb)
-    if q in _tc_color_cache:
-        return _tc_color_cache[q]
+    slot = _tc_color_cache.get(q)
+    if slot is not None:
+        return slot
     if _tc_next_color_slot > _tc_max_color_slot:
         return -1
     slot = _tc_next_color_slot
@@ -395,8 +413,9 @@ def _tc_get_pair(fg_slot, bg_slot):
     """Get or allocate a curses color pair for fg/bg slot combo."""
     global _tc_next_pair_num
     key = (fg_slot, bg_slot)
-    if key in _tc_pair_cache:
-        return _tc_pair_cache[key]
+    pair = _tc_pair_cache.get(key)
+    if pair is not None:
+        return pair
     if _tc_next_pair_num >= _tc_max_pair_num:
         return 0
     pair = _tc_next_pair_num
@@ -409,30 +428,23 @@ def _tc_get_pair(fg_slot, bg_slot):
     return pair
 
 
-def tc_addstr(stdscr, y, x, text, fg=None, bg=None, bold=False, dim=False):
-    """Write text with true-color-like rendering through curses' buffer.
-    Dynamically allocates curses color slots/pairs from RGB tuples so that
-    stdscr.clear() and stdscr.refresh() work correctly."""
-    _tc_ensure_limits()
-
-    can_remap = curses.COLORS >= 256 and curses.can_change_color()
-    fg_slot = -1  # default fg
-    bg_slot = -1  # default bg
-
-    if fg and can_remap:
-        fg_slot = _tc_get_slot(fg)
-    if bg and can_remap:
-        bg_slot = _tc_get_slot(bg)
-
+def _tc_attr(fg=None, bg=None, bold=False, dim=False):
+    """Build a curses attr from RGB tuples. Fast path for pre-allocated colors."""
+    fg_slot = _tc_get_slot(fg) if (fg and _tc_can_remap) else -1
+    bg_slot = _tc_get_slot(bg) if (bg and _tc_can_remap) else -1
     pair_num = _tc_get_pair(fg_slot, bg_slot)
     attr = curses.color_pair(pair_num)
     if bold:
         attr |= curses.A_BOLD
     if dim:
         attr |= curses.A_DIM
+    return attr
 
+
+def tc_addstr(stdscr, y, x, text, fg=None, bg=None, bold=False, dim=False):
+    """Write text with true-color-like rendering through curses' buffer."""
     try:
-        stdscr.addstr(y, x, text, attr)
+        stdscr.addstr(y, x, text, _tc_attr(fg, bg, bold, dim))
     except curses.error:
         pass
 
@@ -702,6 +714,9 @@ class FileManager:
             _setup_256_colors()
         else:
             _setup_basic_colors()
+
+        # Pre-allocate THEME color pairs for fast rendering
+        _tc_init()
 
         self.kitty = detect_kitty()
         self.use_true_color = self.kitty.has_true_color
@@ -1544,14 +1559,22 @@ class FileManager:
 
             try:
                 if self.use_true_color and is_selected:
-                    # Horizontal gradient selection with left-edge marker.
-                    for idx, ch in enumerate(row_text):
-                        t = (idx / max(1, content_w - 1))
+                    # Chunked horizontal gradient selection (5 segments instead of per-char).
+                    num_segs = 5
+                    seg_len = max(1, content_w // num_segs)
+                    # Left-edge marker
+                    bg0 = blend(THEME['gradient_sel_1'], THEME['gradient_sel_2'], 0.0)
+                    tc_addstr(self.stdscr, y, x, '▌', fg=THEME['accent_primary'], bg=bg0, bold=True)
+                    pos = 1
+                    for seg in range(num_segs):
+                        seg_start = max(1, seg * seg_len) if seg > 0 else 1
+                        seg_end = min(content_w, (seg + 1) * seg_len) if seg < num_segs - 1 else content_w
+                        if seg_start >= seg_end:
+                            continue
+                        t = ((seg_start + seg_end) / 2) / max(1, content_w - 1)
                         bg = blend(THEME['gradient_sel_1'], THEME['gradient_sel_2'], t)
-                        if idx == 0:
-                            tc_addstr(self.stdscr, y, x + idx, '▌', fg=THEME['accent_primary'], bg=bg, bold=True)
-                        else:
-                            tc_addstr(self.stdscr, y, x + idx, ch, fg=THEME['text_primary'], bg=bg, bold=True)
+                        chunk = row_text[seg_start:seg_end]
+                        tc_addstr(self.stdscr, y, x + seg_start, chunk, fg=THEME['text_primary'], bg=bg, bold=True)
                     if git_indicator.strip():
                         gi_x = x + len(marker)
                         gi_i = gi_x - x
@@ -1633,25 +1656,37 @@ class FileManager:
 
         if layout['sidebar_width'] > 0:
             x = layout['sidebar_x'] + layout['sidebar_width']
-            for y in range(0, height):
-                try:
-                    if self.use_true_color:
-                        tc_addstr(self.stdscr, y, x, '│', fg=border_color_for('left'))
-                    else:
-                        self.stdscr.addstr(y, x, '│', border_color_for('left'))
-                except curses.error:
-                    pass
+            if self.use_true_color:
+                attr = _tc_attr(fg=border_color_for('left'))
+                for y in range(0, height):
+                    try:
+                        self.stdscr.addstr(y, x, '│', attr)
+                    except curses.error:
+                        pass
+            else:
+                attr = border_color_for('left')
+                for y in range(0, height):
+                    try:
+                        self.stdscr.addstr(y, x, '│', attr)
+                    except curses.error:
+                        pass
 
         if layout['preview_width'] > 0:
             x = layout['preview_x']
-            for y in range(0, height):
-                try:
-                    if self.use_true_color:
-                        tc_addstr(self.stdscr, y, x, '│', fg=border_color_for('right'))
-                    else:
-                        self.stdscr.addstr(y, x, '│', border_color_for('right'))
-                except curses.error:
-                    pass
+            if self.use_true_color:
+                attr = _tc_attr(fg=border_color_for('right'))
+                for y in range(0, height):
+                    try:
+                        self.stdscr.addstr(y, x, '│', attr)
+                    except curses.error:
+                        pass
+            else:
+                attr = border_color_for('right')
+                for y in range(0, height):
+                    try:
+                        self.stdscr.addstr(y, x, '│', attr)
+                    except curses.error:
+                        pass
 
     def draw_sidebar(self, layout):
         """Draw sidebar panel with quick access and expandable directory tree."""
@@ -1668,14 +1703,22 @@ class FileManager:
         inner_w = max(0, w - 2)
 
         # Paint sidebar background
-        for y in range(y_start, y_end):
-            try:
-                if self.use_true_color:
-                    tc_addstr(self.stdscr, y, x, ' ' * w, bg=THEME['bg_surface'])
-                else:
-                    self.stdscr.addstr(y, x, ' ' * w, curses.color_pair(14))
-            except curses.error:
-                pass
+        if self.use_true_color:
+            bg_attr = _tc_attr(bg=THEME['bg_surface'])
+            blank = ' ' * w
+            for y in range(y_start, y_end):
+                try:
+                    self.stdscr.addstr(y, x, blank, bg_attr)
+                except curses.error:
+                    pass
+        else:
+            blank = ' ' * w
+            attr = curses.color_pair(14)
+            for y in range(y_start, y_end):
+                try:
+                    self.stdscr.addstr(y, x, blank, attr)
+                except curses.error:
+                    pass
 
         if panel_h <= 0 or inner_w <= 0:
             self.sidebar_items = []
@@ -1882,14 +1925,22 @@ class FileManager:
             self.preview_cache['image_id'] = 0
 
         # Fill panel background
-        for y in range(y_start, y_end):
-            try:
-                if self.use_true_color:
-                    tc_addstr(self.stdscr, y, x, ' ' * w, bg=THEME['bg_surface'])
-                else:
-                    self.stdscr.addstr(y, x, ' ' * w, curses.color_pair(14))
-            except curses.error:
-                pass
+        if self.use_true_color:
+            bg_attr = _tc_attr(bg=THEME['bg_surface'])
+            blank = ' ' * w
+            for y in range(y_start, y_end):
+                try:
+                    self.stdscr.addstr(y, x, blank, bg_attr)
+                except curses.error:
+                    pass
+        else:
+            blank = ' ' * w
+            attr = curses.color_pair(14)
+            for y in range(y_start, y_end):
+                try:
+                    self.stdscr.addstr(y, x, blank, attr)
+                except curses.error:
+                    pass
 
         def draw_line(y, text, fg=None, bg=None, bold=False, dim=False):
             if y < y_start or y >= y_end or inner_w <= 0:
@@ -2487,6 +2538,8 @@ class FileManager:
     
     def draw(self):
         """Draw the entire interface."""
+        if self.use_true_color:
+            self.stdscr.bkgd(' ', _tc_attr(bg=THEME['bg_base']))
         self.stdscr.clear()
         layout = self._calc_layout()
         self.draw_panel_borders(layout)
@@ -2508,12 +2561,6 @@ class FileManager:
                 self.selected_index = 0
                 self.scroll_offset = 0
                 self.load_directory()
-                if self.use_true_color:
-                    height, width = self.stdscr.getmaxyx()
-                    for y in range(height):
-                        tc_addstr(self.stdscr, y, 0, ' ' * width, bg=THEME['bg_base'])
-                    self.stdscr.refresh()
-                    curses.napms(15)
                 self.message = ""
             else:
                 self.message = "Directory does not exist"
@@ -2997,15 +3044,6 @@ class FileManager:
             dim_bg = THEME['shadow']
             for y in range(height):
                 tc_addstr(self.stdscr, y, 0, ' ' * width, bg=dim_bg)
-
-            small_w = max(10, int(box_width * 0.8))
-            small_h = max(5, int(box_height * 0.8))
-            small_x = (width - small_w) // 2
-            small_y = (height - small_h) // 2
-            for dy in range(small_h):
-                tc_addstr(self.stdscr, small_y + dy, small_x, ' ' * small_w, bg=THEME['bg_overlay'])
-            self.stdscr.refresh()
-            curses.napms(20)
 
             border_fg = THEME['accent_rose'] if style == 'danger' else THEME['border_accent']
             title_fg = THEME['accent_primary']
